@@ -1,4 +1,4 @@
-import { getEnv } from "../app/env.ts";
+import { getEnv } from "../app/env";
 
 const GOOGLE_OAUTH_SCOPE = [
   "https://www.googleapis.com/auth/calendar.events",

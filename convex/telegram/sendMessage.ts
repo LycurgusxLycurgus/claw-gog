@@ -1,4 +1,4 @@
-import { getEnv } from "../app/env.ts";
+import { getEnv } from "../app/env";
 
 export async function sendTelegramMessage(chatId: string, text: string) {
   const env = getEnv();

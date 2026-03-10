@@ -1,8 +1,9 @@
-import { httpAction, httpRouter } from "convex/server";
-import { jsonError } from "./shared/errors.ts";
-import { createCorrelationId } from "./shared/log.ts";
-import { normalizeUpdate } from "./telegram/normalizeUpdate.ts";
-import { isAllowedTelegramUser, verifyTelegramSecret } from "./telegram/verify.ts";
+import { httpRouter } from "convex/server";
+import { httpAction } from "./_generated/server.js";
+import { jsonError } from "./shared/errors";
+import { createCorrelationId } from "./shared/log";
+import { normalizeUpdate } from "./telegram/normalizeUpdate";
+import { isAllowedTelegramUser, verifyTelegramSecret } from "./telegram/verify";
 
 const http = httpRouter();
 

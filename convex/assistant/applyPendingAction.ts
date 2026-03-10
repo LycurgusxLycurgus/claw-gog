@@ -1,6 +1,6 @@
-import { deleteEvent } from "../calendar/deleteEvent.ts";
-import { insertEvent } from "../calendar/insertEvent.ts";
-import { updateEvent } from "../calendar/updateEvent.ts";
+import { deleteEvent } from "../calendar/deleteEvent";
+import { insertEvent } from "../calendar/insertEvent";
+import { updateEvent } from "../calendar/updateEvent";
 
 export async function applyPendingAction(accessToken: string, pendingAction: {
   actionType: "create_event" | "move_event" | "delete_event";

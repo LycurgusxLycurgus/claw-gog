@@ -1,5 +1,5 @@
 import { GoogleGenAI } from "@google/genai";
-import { getEnv } from "../app/env.ts";
+import { getEnv } from "../app/env";
 
 export async function askGemini(prompt: string) {
   const env = getEnv();

@@ -1,4 +1,4 @@
-import { defaultCalendarId, googleRequest } from "./client.ts";
+import { defaultCalendarId, googleRequest } from "./client";
 
 export async function updateEvent(accessToken: string, eventId: string, payload: Record<string, unknown>, calendarId = defaultCalendarId()) {
   return googleRequest(

@@ -1,4 +1,4 @@
-import { defaultCalendarId, googleRequest } from "./client.ts";
+import { defaultCalendarId, googleRequest } from "./client";
 
 export async function deleteEvent(accessToken: string, eventId: string, calendarId = defaultCalendarId()) {
   return googleRequest(

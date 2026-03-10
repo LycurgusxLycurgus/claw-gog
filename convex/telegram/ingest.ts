@@ -1,8 +1,8 @@
 import { action } from "../_generated/server";
 import { v } from "convex/values";
-import { decideAction } from "../assistant/decide.ts";
-import { composePrompt } from "../assistant/composePrompt.ts";
-import { askGemini } from "../ai/gemini.ts";
+import { decideAction } from "../assistant/decide";
+import { composePrompt } from "../assistant/composePrompt";
+import { askGemini } from "../ai/gemini";
 
 export const ingestTelegramMessage = action({
   args: {

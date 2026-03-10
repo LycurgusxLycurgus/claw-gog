@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 
-const convex = spawn("npx", ["convex", "dev"], { stdio: "inherit", shell: true });
+const convex = spawn("node", ["./node_modules/convex/bin/main.js", "dev"], { stdio: "inherit", shell: true });
 const web = spawn("node", ["scripts/serve-web.mjs"], { stdio: "inherit", shell: true });
 
 const closeAll = (code = 0) => {

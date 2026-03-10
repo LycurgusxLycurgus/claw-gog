@@ -1,5 +1,5 @@
-import { addDays } from "../shared/time.ts";
-import { defaultCalendarId, googleRequest } from "./client.ts";
+import { addDays } from "../shared/time";
+import { defaultCalendarId, googleRequest } from "./client";
 
 export async function listWeekAgenda(accessToken: string, calendarId = defaultCalendarId()) {
   const start = new Date();

@@ -1,4 +1,4 @@
-import { formatInZone } from "../shared/time.ts";
+import { formatInZone } from "../shared/time";
 
 export type DigestEvent = {
   summary: string;

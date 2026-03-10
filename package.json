@@ -7,10 +7,13 @@
     "node": ">=22.0.0"
   },
   "scripts": {
+    "convex": "node ./node_modules/convex/bin/main.js",
+    "convex:login": "node ./node_modules/convex/bin/main.js login",
+    "convex:configure": "node ./node_modules/convex/bin/main.js dev --once --configure=new",
     "dev": "node scripts/dev.mjs",
     "serve:web": "node scripts/serve-web.mjs",
-    "test": "node --experimental-strip-types --test tests/**/*.test.mjs",
-    "deploy:convex": "npx convex deploy",
+    "test": "node --experimental-strip-types --experimental-specifier-resolution=node --test tests/**/*.test.mjs",
+    "deploy:convex": "node ./node_modules/convex/bin/main.js deploy",
     "lint": "eslint ."
   },
   "dependencies": {

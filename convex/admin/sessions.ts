@@ -1,4 +1,4 @@
-import { getEnv } from "../app/env.ts";
+import { getEnv } from "../app/env";
 
 const COOKIE_NAME = "bridgeclaw_admin";
 
