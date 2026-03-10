@@ -7,7 +7,7 @@ import { askGemini } from "../ai/gemini";
 import { getEnv } from "../app/env";
 import { formatDigest } from "../calendar/formatDigest";
 import { listWeekAgenda } from "../calendar/listWeekAgenda";
-import { getValidGoogleAccessToken } from "../calendar/oauth";
+import { getValidGoogleAccessToken, pickDefaultCalendarId } from "../calendar/oauth";
 import { addDays, dateKeyInZone } from "../shared/time";
 import { sendTelegramMessage } from "./sendMessage";
 
@@ -153,8 +153,26 @@ export const ingestTelegramMessage = action({
       } else {
         const timeZone = appConfig?.timezone ?? env.DEFAULT_TIMEZONE;
         const locale = appConfig?.locale ?? env.DEFAULT_LOCALE;
-        const calendarId = appConfig?.googleCalendarDefaultId ?? env.GOOGLE_CALENDAR_DEFAULT_ID;
-        const weekEvents = await listWeekAgenda(accessToken, calendarId);
+        const connection = await ctx.runQuery(internal.calendar.oauth.getGoogleConnection, {
+          ownerKey: env.APP_OWNER_KEY,
+        });
+        const preferredCalendarId = pickDefaultCalendarId(connection?.calendarIds ?? [], appConfig?.googleCalendarDefaultId ?? env.GOOGLE_CALENDAR_DEFAULT_ID);
+        let weekEvents = await listWeekAgenda(accessToken, preferredCalendarId);
+
+        if (weekEvents.length === 0 && connection?.calendarIds?.length) {
+          const candidateIds = Array.from(new Set(connection.calendarIds.filter(Boolean)));
+          for (const candidateId of candidateIds) {
+            if (candidateId === preferredCalendarId) {
+              continue;
+            }
+            const candidateEvents = await listWeekAgenda(accessToken, candidateId);
+            if (candidateEvents.length > 0) {
+              weekEvents = candidateEvents;
+              break;
+            }
+          }
+        }
+
         const todayKey = dateKeyInZone(new Date(), timeZone);
         const tomorrowKey = dateKeyInZone(addDays(new Date(), 1), timeZone);
 

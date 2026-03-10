@@ -116,6 +116,16 @@ export async function fetchCalendarList(accessToken: string) {
   return (json.items ?? []).map((calendar: Record<string, unknown>) => String(calendar.id));
 }
 
+export function pickDefaultCalendarId(calendarIds: string[], fallback: string) {
+  if (calendarIds.includes("primary")) {
+    return "primary";
+  }
+  if (calendarIds.includes(fallback)) {
+    return fallback;
+  }
+  return calendarIds[0] ?? fallback;
+}
+
 export const getGoogleConnection = internalQuery({
   args: {
     ownerKey: v.string(),
@@ -181,7 +191,7 @@ export const upsertGoogleConnection = internalMutation({
 
     if (appConfig) {
       await ctx.db.patch(appConfig._id, {
-        googleCalendarDefaultId: args.calendarIds[0] ?? getEnv().GOOGLE_CALENDAR_DEFAULT_ID,
+        googleCalendarDefaultId: pickDefaultCalendarId(args.calendarIds, getEnv().GOOGLE_CALENDAR_DEFAULT_ID),
         updatedAt: now,
       });
     } else {
@@ -191,7 +201,7 @@ export const upsertGoogleConnection = internalMutation({
         dailyDigestHour: 6,
         dailyDigestMinute: 0,
         telegramDigestChatId: getEnv().TELEGRAM_DEFAULT_CHAT_ID,
-        googleCalendarDefaultId: args.calendarIds[0] ?? getEnv().GOOGLE_CALENDAR_DEFAULT_ID,
+        googleCalendarDefaultId: pickDefaultCalendarId(args.calendarIds, getEnv().GOOGLE_CALENDAR_DEFAULT_ID),
         locale: getEnv().DEFAULT_LOCALE,
         updatedAt: now,
       });
