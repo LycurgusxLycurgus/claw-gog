@@ -2,7 +2,7 @@ import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server.js";
 import { api, internal } from "./_generated/api.js";
 import { getEnv } from "./app/env";
-import { buildGoogleOauthUrl, exchangeGoogleCode, fetchCalendarList, fetchGoogleProfile } from "./calendar/oauth";
+import { buildGoogleOauthUrl, decodeIdTokenEmail, exchangeGoogleCode, fetchCalendarList } from "./calendar/oauth";
 import { jsonError } from "./shared/errors";
 import { createCorrelationId } from "./shared/log";
 import { normalizeUpdate } from "./telegram/normalizeUpdate";
@@ -25,6 +25,11 @@ function redirect(location: string) {
       location,
     },
   });
+}
+
+function redirectWithError(message: string) {
+  const safeMessage = encodeURIComponent(message.slice(0, 180));
+  return redirect(`${getEnv().APP_BASE_URL}/connect/google-error.html?error=${safeMessage}`);
 }
 
 http.route({
@@ -65,7 +70,7 @@ http.route({
     const state = url.searchParams.get("state") ?? getEnv().APP_OWNER_KEY;
 
     if (!code) {
-      return redirect(`${getEnv().APP_BASE_URL}/connect/google-error.html`);
+      return redirectWithError("Missing authorization code");
     }
 
     try {
@@ -73,12 +78,26 @@ http.route({
       const accessToken = String(tokenResponse.access_token);
       const refreshToken = String(tokenResponse.refresh_token ?? "");
       const scope = String(tokenResponse.scope ?? "").split(" ").filter(Boolean);
-      const profile = await fetchGoogleProfile(accessToken);
-      const calendarIds = await fetchCalendarList(accessToken);
+      const googleEmail = decodeIdTokenEmail(typeof tokenResponse.id_token === "string" ? tokenResponse.id_token : undefined) ?? "unknown@example.com";
+      let calendarIds = [getEnv().GOOGLE_CALENDAR_DEFAULT_ID];
+
+      try {
+        const fetchedCalendarIds = await fetchCalendarList(accessToken);
+        if (fetchedCalendarIds.length > 0) {
+          calendarIds = fetchedCalendarIds;
+        }
+      } catch (error) {
+        console.error(JSON.stringify({
+          level: "warn",
+          phase: "oauth.google.callback.calendar_list",
+          msg: "Calendar list fetch failed after token exchange",
+          error: error instanceof Error ? error.message : "Unknown error",
+        }));
+      }
 
       await ctx.runMutation(internal.calendar.oauth.upsertGoogleConnection, {
         ownerKey: state,
-        googleEmail: String(profile.email ?? "unknown@example.com"),
+        googleEmail,
         accessTokenEnc: accessToken,
         refreshTokenEnc: refreshToken,
         expiryAt: Date.now() + Number(tokenResponse.expires_in ?? 3600) * 1000,
@@ -88,8 +107,14 @@ http.route({
       });
 
       return redirect(`${getEnv().APP_BASE_URL}/connect/google-success.html`);
-    } catch {
-      return redirect(`${getEnv().APP_BASE_URL}/connect/google-error.html`);
+    } catch (error) {
+      console.error(JSON.stringify({
+        level: "error",
+        phase: "oauth.google.callback",
+        msg: "Google OAuth callback failed",
+        error: error instanceof Error ? error.message : "Unknown error",
+      }));
+      return redirectWithError(error instanceof Error ? error.message : "Unknown callback error");
     }
   }),
 });

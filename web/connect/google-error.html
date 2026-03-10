@@ -12,8 +12,16 @@
       <section class="panel">
         <p class="eyebrow">Google OAuth</p>
         <h1>Connection failed</h1>
-        <p class="lead">Google OAuth did not complete. Check the callback URL, client credentials, and Convex logs.</p>
+        <p class="lead" id="oauth-error-text">Google OAuth did not complete. Check the callback URL, client credentials, and Convex logs.</p>
       </section>
     </main>
+    <script>
+      const params = new URLSearchParams(window.location.search);
+      const error = params.get("error");
+      if (error) {
+        const el = document.getElementById("oauth-error-text");
+        if (el) el.textContent = decodeURIComponent(error);
+      }
+    </script>
   </body>
   </html>

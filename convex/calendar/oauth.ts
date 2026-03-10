@@ -78,6 +78,29 @@ export async function fetchGoogleProfile(accessToken: string) {
   return response.json();
 }
 
+export function decodeIdTokenEmail(idToken: string | undefined) {
+  if (!idToken) {
+    return null;
+  }
+
+  const parts = idToken.split(".");
+  if (parts.length < 2) {
+    return null;
+  }
+
+  const payload = parts[1]
+    .replace(/-/g, "+")
+    .replace(/_/g, "/")
+    .padEnd(Math.ceil(parts[1].length / 4) * 4, "=");
+
+  try {
+    const json = JSON.parse(Buffer.from(payload, "base64").toString("utf-8"));
+    return typeof json.email === "string" ? json.email : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function fetchCalendarList(accessToken: string) {
   const response = await fetch("https://www.googleapis.com/calendar/v3/users/me/calendarList", {
     headers: {
