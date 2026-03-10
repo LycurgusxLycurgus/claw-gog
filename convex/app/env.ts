@@ -4,6 +4,7 @@ const EnvSchema = z.object({
   APP_BASE_URL: z.string().url(),
   APP_OWNER_KEY: z.string().min(1),
   ADMIN_PASSWORD: z.string().min(8),
+  CONVEX_SITE_URL: z.string().url(),
   CONVEX_URL: z.string().url(),
   DEFAULT_LOCALE: z.string().min(2),
   DEFAULT_TIMEZONE: z.string().min(3),

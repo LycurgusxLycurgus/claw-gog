@@ -1,4 +1,5 @@
 const healthPanel = document.querySelector("#health-panel");
+const connectGoogleLink = document.querySelector("#connect-google-link");
 
 async function loadHealth() {
   const convexUrl = window.localStorage.getItem("bridgeclaw_convex_url");
@@ -8,6 +9,10 @@ async function loadHealth() {
       <div><dt>Action</dt><dd>Set localStorage.bridgeclaw_convex_url in the browser console.</dd></div>
     `;
     return;
+  }
+
+  if (connectGoogleLink instanceof HTMLAnchorElement) {
+    connectGoogleLink.href = `${convexUrl}/oauth/google/start`;
   }
 
   try {

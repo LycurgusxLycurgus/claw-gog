@@ -1,7 +1,8 @@
 import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server.js";
-import { api } from "./_generated/api.js";
+import { api, internal } from "./_generated/api.js";
 import { getEnv } from "./app/env";
+import { buildGoogleOauthUrl, exchangeGoogleCode, fetchCalendarList, fetchGoogleProfile } from "./calendar/oauth";
 import { jsonError } from "./shared/errors";
 import { createCorrelationId } from "./shared/log";
 import { normalizeUpdate } from "./telegram/normalizeUpdate";
@@ -15,6 +16,15 @@ function corsHeaders() {
     "access-control-allow-methods": "GET, POST, OPTIONS",
     "access-control-allow-headers": "content-type",
   };
+}
+
+function redirect(location: string) {
+  return new Response(null, {
+    status: 302,
+    headers: {
+      location,
+    },
+  });
 }
 
 http.route({
@@ -35,6 +45,52 @@ http.route({
         },
       }
     );
+  }),
+});
+
+http.route({
+  path: "/oauth/google/start",
+  method: "GET",
+  handler: httpAction(async () => {
+    return redirect(buildGoogleOauthUrl(getEnv().APP_OWNER_KEY));
+  }),
+});
+
+http.route({
+  path: "/oauth/google/callback",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    const url = new URL(request.url);
+    const code = url.searchParams.get("code");
+    const state = url.searchParams.get("state") ?? getEnv().APP_OWNER_KEY;
+
+    if (!code) {
+      return redirect(`${getEnv().APP_BASE_URL}/connect/google-error.html`);
+    }
+
+    try {
+      const tokenResponse = await exchangeGoogleCode(code);
+      const accessToken = String(tokenResponse.access_token);
+      const refreshToken = String(tokenResponse.refresh_token ?? "");
+      const scope = String(tokenResponse.scope ?? "").split(" ").filter(Boolean);
+      const profile = await fetchGoogleProfile(accessToken);
+      const calendarIds = await fetchCalendarList(accessToken);
+
+      await ctx.runMutation(internal.calendar.oauth.upsertGoogleConnection, {
+        ownerKey: state,
+        googleEmail: String(profile.email ?? "unknown@example.com"),
+        accessTokenEnc: accessToken,
+        refreshTokenEnc: refreshToken,
+        expiryAt: Date.now() + Number(tokenResponse.expires_in ?? 3600) * 1000,
+        scope,
+        calendarIds,
+        status: "active",
+      });
+
+      return redirect(`${getEnv().APP_BASE_URL}/connect/google-success.html`);
+    } catch {
+      return redirect(`${getEnv().APP_BASE_URL}/connect/google-error.html`);
+    }
   }),
 });
 

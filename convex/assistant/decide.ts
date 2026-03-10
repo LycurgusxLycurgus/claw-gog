@@ -1,7 +1,19 @@
 export function decideAction(message: string) {
   const text = message.trim().toLowerCase();
 
-  if (text.startsWith("/agenda") || text.startsWith("/today") || text.startsWith("/tomorrow") || text.startsWith("/week")) {
+  if (
+    text.startsWith("/agenda") ||
+    text.startsWith("/calendar") ||
+    text.startsWith("/today") ||
+    text.startsWith("/tomorrow") ||
+    text.startsWith("/week") ||
+    text.includes("what do i have") ||
+    text.includes("my schedule") ||
+    text.includes("calendar") ||
+    text.includes("agenda") ||
+    text.includes("tomorrow") ||
+    text.includes("today")
+  ) {
     return { mode: "read", needsConfirmation: false } as const;
   }
 

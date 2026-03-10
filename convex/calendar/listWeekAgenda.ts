@@ -1,9 +1,7 @@
 import { addDays } from "../shared/time";
 import { defaultCalendarId, googleRequest } from "./client";
 
-export async function listWeekAgenda(accessToken: string, calendarId = defaultCalendarId()) {
-  const start = new Date();
-  const end = addDays(start, 7);
+export async function listAgendaRange(accessToken: string, start: Date, end: Date, calendarId = defaultCalendarId()) {
   const params = new URLSearchParams({
     orderBy: "startTime",
     singleEvents: "true",
@@ -21,4 +19,10 @@ export async function listWeekAgenda(accessToken: string, calendarId = defaultCa
     end: event.end?.dateTime ?? event.end?.date,
     status: event.status ?? "confirmed",
   }));
+}
+
+export async function listWeekAgenda(accessToken: string, calendarId = defaultCalendarId()) {
+  const start = new Date();
+  const end = addDays(start, 7);
+  return listAgendaRange(accessToken, start, end, calendarId);
 }

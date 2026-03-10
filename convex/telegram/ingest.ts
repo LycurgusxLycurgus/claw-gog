@@ -5,6 +5,10 @@ import { decideAction } from "../assistant/decide";
 import { composePrompt } from "../assistant/composePrompt";
 import { askGemini } from "../ai/gemini";
 import { getEnv } from "../app/env";
+import { formatDigest } from "../calendar/formatDigest";
+import { listWeekAgenda } from "../calendar/listWeekAgenda";
+import { getValidGoogleAccessToken } from "../calendar/oauth";
+import { addDays, dateKeyInZone } from "../shared/time";
 import { sendTelegramMessage } from "./sendMessage";
 
 export const storeTelegramTurn = internalMutation({
@@ -112,8 +116,23 @@ export const ingestTelegramMessage = action({
     const env = getEnv();
     const decision = decideAction(args.text);
     let outboundText = "";
+    const normalizedText = args.text.trim().toLowerCase();
 
-    if (decision.mode === "chat") {
+    if (normalizedText === "/start") {
+      const connection = await ctx.runQuery(internal.calendar.oauth.getGoogleConnection, {
+        ownerKey: env.APP_OWNER_KEY,
+      });
+      const connectUrl = `${env.CONVEX_SITE_URL}/oauth/google/start`;
+      outboundText = connection
+        ? "BridgeClaw is connected and ready. Try /agenda, /today, /tomorrow, or /week."
+        : `BridgeClaw is online. Connect Google Calendar here first: ${connectUrl}`;
+    }
+
+    if (normalizedText === "/connect") {
+      outboundText = `Connect Google Calendar here: ${env.CONVEX_SITE_URL}/oauth/google/start`;
+    }
+
+    if (!outboundText && decision.mode === "chat") {
       const prompt = composePrompt({
         nowIso: new Date().toISOString(),
         timezone: env.DEFAULT_TIMEZONE,
@@ -122,10 +141,44 @@ export const ingestTelegramMessage = action({
       });
       outboundText = await askGemini(prompt);
     }
-    if (decision.mode === "read") {
-      outboundText = "Agenda read is wired at the webhook. Calendar-backed answers are the next slice.";
+    if (!outboundText && decision.mode === "read") {
+      const appConfig = await ctx.runQuery(internal.calendar.oauth.getAppConfig, {
+        ownerKey: env.APP_OWNER_KEY,
+      });
+      const accessToken = await getValidGoogleAccessToken(ctx, env.APP_OWNER_KEY);
+      const connectUrl = `${env.CONVEX_SITE_URL}/oauth/google/start`;
+
+      if (!accessToken) {
+        outboundText = `Google Calendar is not connected yet. Connect it here: ${connectUrl}`;
+      } else {
+        const timeZone = appConfig?.timezone ?? env.DEFAULT_TIMEZONE;
+        const locale = appConfig?.locale ?? env.DEFAULT_LOCALE;
+        const calendarId = appConfig?.googleCalendarDefaultId ?? env.GOOGLE_CALENDAR_DEFAULT_ID;
+        const weekEvents = await listWeekAgenda(accessToken, calendarId);
+        const todayKey = dateKeyInZone(new Date(), timeZone);
+        const tomorrowKey = dateKeyInZone(addDays(new Date(), 1), timeZone);
+
+        let selectedEvents = weekEvents;
+        let label = "the next 7 days";
+
+        if (normalizedText.startsWith("/today") || normalizedText.includes("today")) {
+          selectedEvents = weekEvents.filter((event: { start: string }) => dateKeyInZone(event.start, timeZone) === todayKey);
+          label = "today";
+        } else if (normalizedText.startsWith("/tomorrow") || normalizedText.includes("tomorrow")) {
+          selectedEvents = weekEvents.filter((event: { start: string }) => dateKeyInZone(event.start, timeZone) === tomorrowKey);
+          label = "tomorrow";
+        } else if (normalizedText.startsWith("/agenda") || normalizedText.startsWith("/calendar") || normalizedText.startsWith("/week")) {
+          selectedEvents = weekEvents;
+          label = "the next 7 days";
+        }
+
+        outboundText =
+          selectedEvents.length > 0
+            ? formatDigest(selectedEvents, { locale, timeZone })
+            : `You have no calendar events scheduled for ${label}.`;
+      }
     }
-    if (decision.mode === "mutate") {
+    if (!outboundText && decision.mode === "mutate") {
       outboundText = "Mutation drafting is wired. Confirmation-gated calendar writes are the next slice.";
     }
 
