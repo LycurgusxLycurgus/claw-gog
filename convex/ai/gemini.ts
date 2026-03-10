@@ -66,9 +66,8 @@ export async function runGeminiScheduleLoop(input: {
     },
   };
 
-  const response1 = await client.models.generateContent({
+  const chat = client.chats.create({
     model: env.GEMINI_MODEL,
-    contents: [{ role: "user", parts: [{ text: input.prompt }] }],
     config: {
       temperature: 0.1,
       tools: [{ functionDeclarations: [readScheduleDeclaration] }],
@@ -85,11 +84,13 @@ export async function runGeminiScheduleLoop(input: {
     },
   });
 
-  const modelParts = response1.candidates?.[0]?.content?.parts ?? [];
-  const functionCallPart = modelParts.find((part) => part.functionCall?.name === "read_schedule");
-  const functionCall = functionCallPart?.functionCall;
+  const response1 = await chat.sendMessage({
+    message: input.prompt,
+  });
 
-  if (!functionCallPart || !functionCall || functionCall.name !== "read_schedule") {
+  const functionCall = response1.functionCalls?.[0];
+
+  if (!functionCall || functionCall.name !== "read_schedule") {
     return response1.text ?? "I could not determine the schedule window.";
   }
 
@@ -101,36 +102,15 @@ export async function runGeminiScheduleLoop(input: {
     requestedLabel: String(functionArgs.requestedLabel ?? "the requested range"),
   });
 
-  const history = [
-    { role: "user", parts: [{ text: input.prompt }] },
-    {
-      role: "model",
-      parts: [functionCallPart],
-    },
-    {
-      role: "user",
-      parts: [
-        {
-          functionResponse: {
-            name: functionCall.name,
-            response: toolResult,
-          },
+  const response2 = await chat.sendMessage({
+    message: [
+      {
+        functionResponse: {
+          name: functionCall.name,
+          response: toolResult,
         },
-      ],
-    },
-  ];
-
-  const response2 = await client.models.generateContent({
-    model: env.GEMINI_MODEL,
-    contents: history,
-    config: {
-      temperature: 0.1,
-      tools: [{ functionDeclarations: [readScheduleDeclaration] }],
-      thinkingConfig: {
-        thinkingBudget: 12000,
-        includeThoughts: true,
       },
-    },
+    ],
   });
 
   return response2.text ?? "I could not summarize the schedule.";
