@@ -7,7 +7,10 @@ export function decideAction(message: string) {
     text.startsWith("/today") ||
     text.startsWith("/tomorrow") ||
     text.startsWith("/week") ||
+    text.includes("week") ||
+    text.includes("schedule") ||
     text.includes("what do i have") ||
+    text.includes("what events") ||
     text.includes("my schedule") ||
     text.includes("calendar") ||
     text.includes("agenda") ||

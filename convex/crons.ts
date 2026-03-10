@@ -3,7 +3,13 @@ import { api } from "./_generated/api.js";
 
 const crons = cronJobs();
 
-crons.interval("daily digest placeholder", { hours: 24 }, api.assistant.sendDailyDigest.runDailyDigest, {
-});
+crons.daily(
+  "daily digest 6am bogota",
+  {
+    hourUTC: 11,
+    minuteUTC: 0,
+  },
+  api.assistant.sendDailyDigest.runDailyDigest
+);
 
 export default crons;

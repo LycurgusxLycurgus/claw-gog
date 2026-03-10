@@ -6,10 +6,104 @@ import { composePrompt } from "../assistant/composePrompt";
 import { askGemini } from "../ai/gemini";
 import { getEnv } from "../app/env";
 import { formatDigest } from "../calendar/formatDigest";
-import { listWeekAgenda } from "../calendar/listWeekAgenda";
+import { listAgendaRange, listWeekAgenda } from "../calendar/listWeekAgenda";
 import { getValidGoogleAccessToken, pickDefaultCalendarId } from "../calendar/oauth";
 import { addDays, dateKeyInZone } from "../shared/time";
 import { sendTelegramMessage } from "./sendMessage";
+
+const MONTHS: Record<string, number> = {
+  january: 0,
+  february: 1,
+  march: 2,
+  april: 3,
+  may: 4,
+  june: 5,
+  july: 6,
+  august: 7,
+  september: 8,
+  october: 9,
+  november: 10,
+  december: 11,
+};
+
+function startOfDay(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0, 0);
+}
+
+function endOfDay(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59, 999);
+}
+
+function parseExplicitRange(text: string, now: Date) {
+  const match = text.match(
+    /\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})(?:st|nd|rd|th)?\s+(?:to|through|-)\s+(?:(january|february|march|april|may|june|july|august|september|october|november|december)\s+)?(\d{1,2})(?:st|nd|rd|th)?\b/i
+  );
+
+  if (!match) {
+    return null;
+  }
+
+  const startMonth = MONTHS[match[1].toLowerCase()];
+  const startDay = Number(match[2]);
+  const endMonth = MONTHS[(match[3] ?? match[1]).toLowerCase()];
+  const endDay = Number(match[4]);
+  const year = now.getFullYear();
+  const start = startOfDay(new Date(year, startMonth, startDay));
+  const end = endOfDay(new Date(year, endMonth, endDay));
+
+  return {
+    start,
+    end,
+    label: `${match[1]} ${startDay} to ${match[3] ?? match[1]} ${endDay}`,
+  };
+}
+
+function parseReadWindow(text: string, now: Date) {
+  const explicitRange = parseExplicitRange(text, now);
+  if (explicitRange) {
+    return explicitRange;
+  }
+
+  if (text.includes("today and tomorrow")) {
+    return {
+      start: startOfDay(now),
+      end: endOfDay(addDays(now, 1)),
+      label: "today and tomorrow",
+    };
+  }
+
+  if (text.startsWith("/today") || text.includes("today")) {
+    return {
+      start: startOfDay(now),
+      end: endOfDay(now),
+      label: "today",
+    };
+  }
+
+  if (text.startsWith("/tomorrow") || text.includes("tomorrow")) {
+    const tomorrow = addDays(now, 1);
+    return {
+      start: startOfDay(tomorrow),
+      end: endOfDay(tomorrow),
+      label: "tomorrow",
+    };
+  }
+
+  if (text.startsWith("/week") || text.includes("next week") || text.includes("the next week")) {
+    const tomorrow = addDays(now, 1);
+    return {
+      start: startOfDay(tomorrow),
+      end: endOfDay(addDays(tomorrow, 6)),
+      label: "the next week",
+    };
+  }
+
+  return {
+    start: now,
+    end: addDays(now, 7),
+    label: "the next 7 days",
+  };
+}
 
 export const storeTelegramTurn = internalMutation({
   args: {
@@ -157,7 +251,8 @@ export const ingestTelegramMessage = action({
           ownerKey: env.APP_OWNER_KEY,
         });
         const preferredCalendarId = pickDefaultCalendarId(connection?.calendarIds ?? [], appConfig?.googleCalendarDefaultId ?? env.GOOGLE_CALENDAR_DEFAULT_ID);
-        let weekEvents = await listWeekAgenda(accessToken, preferredCalendarId);
+        const window = parseReadWindow(normalizedText, new Date());
+        let weekEvents = await listAgendaRange(accessToken, window.start, window.end, preferredCalendarId);
 
         if (weekEvents.length === 0 && connection?.calendarIds?.length) {
           const candidateIds = Array.from(new Set(connection.calendarIds.filter(Boolean)));
@@ -165,7 +260,7 @@ export const ingestTelegramMessage = action({
             if (candidateId === preferredCalendarId) {
               continue;
             }
-            const candidateEvents = await listWeekAgenda(accessToken, candidateId);
+            const candidateEvents = await listAgendaRange(accessToken, window.start, window.end, candidateId);
             if (candidateEvents.length > 0) {
               weekEvents = candidateEvents;
               break;
@@ -173,27 +268,10 @@ export const ingestTelegramMessage = action({
           }
         }
 
-        const todayKey = dateKeyInZone(new Date(), timeZone);
-        const tomorrowKey = dateKeyInZone(addDays(new Date(), 1), timeZone);
-
-        let selectedEvents = weekEvents;
-        let label = "the next 7 days";
-
-        if (normalizedText.startsWith("/today") || normalizedText.includes("today")) {
-          selectedEvents = weekEvents.filter((event: { start: string }) => dateKeyInZone(event.start, timeZone) === todayKey);
-          label = "today";
-        } else if (normalizedText.startsWith("/tomorrow") || normalizedText.includes("tomorrow")) {
-          selectedEvents = weekEvents.filter((event: { start: string }) => dateKeyInZone(event.start, timeZone) === tomorrowKey);
-          label = "tomorrow";
-        } else if (normalizedText.startsWith("/agenda") || normalizedText.startsWith("/calendar") || normalizedText.startsWith("/week")) {
-          selectedEvents = weekEvents;
-          label = "the next 7 days";
-        }
-
         outboundText =
-          selectedEvents.length > 0
-            ? formatDigest(selectedEvents, { locale, timeZone })
-            : `You have no calendar events scheduled for ${label}.`;
+          weekEvents.length > 0
+            ? formatDigest(weekEvents, { locale, timeZone })
+            : `You have no calendar events scheduled for ${window.label}.`;
       }
     }
     if (!outboundText && decision.mode === "mutate") {
