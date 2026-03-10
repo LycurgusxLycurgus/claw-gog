@@ -102,7 +102,7 @@ export async function runGeminiScheduleLoop(input: {
     { role: "user", parts: [{ text: input.prompt }] },
     response1.candidates?.[0]?.content ?? { role: "model", parts: [] },
     {
-      role: "tool",
+      role: "user",
       parts: [
         {
           functionResponse: {
