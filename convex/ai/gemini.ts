@@ -111,6 +111,17 @@ export async function runGeminiScheduleLoop(input: {
         },
       },
     ],
+    config: {
+      toolConfig: {
+        functionCallingConfig: {
+          mode: FunctionCallingConfigMode.NONE,
+        },
+      },
+      thinkingConfig: {
+        thinkingBudget: 12000,
+        includeThoughts: true,
+      },
+    },
   });
 
   return response2.text ?? "I could not summarize the schedule.";
