@@ -85,8 +85,11 @@ export async function runGeminiScheduleLoop(input: {
     },
   });
 
-  const functionCall = response1.functionCalls?.[0];
-  if (!functionCall || functionCall.name !== "read_schedule") {
+  const modelParts = response1.candidates?.[0]?.content?.parts ?? [];
+  const functionCallPart = modelParts.find((part) => part.functionCall?.name === "read_schedule");
+  const functionCall = functionCallPart?.functionCall;
+
+  if (!functionCallPart || !functionCall || functionCall.name !== "read_schedule") {
     return response1.text ?? "I could not determine the schedule window.";
   }
 
@@ -100,7 +103,10 @@ export async function runGeminiScheduleLoop(input: {
 
   const history = [
     { role: "user", parts: [{ text: input.prompt }] },
-    response1.candidates?.[0]?.content ?? { role: "model", parts: [] },
+    {
+      role: "model",
+      parts: [functionCallPart],
+    },
     {
       role: "user",
       parts: [
