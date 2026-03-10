@@ -5,7 +5,7 @@ import { getEnv } from "./app/env";
 import { jsonError } from "./shared/errors";
 import { createCorrelationId } from "./shared/log";
 import { normalizeUpdate } from "./telegram/normalizeUpdate";
-import { isAllowedTelegramUser, verifyTelegramSecret } from "./telegram/verify";
+import { isAllowedTelegramUser, verifyTelegramSecret, verifyTelegramSecretHeader } from "./telegram/verify";
 
 const http = httpRouter();
 
@@ -39,14 +39,15 @@ http.route({
 });
 
 http.route({
-  path: "/telegram/webhook/:secret",
+  pathPrefix: "/telegram/webhook/",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
     const url = new URL(request.url);
-    const secret = url.pathname.split("/").at(-1) ?? "";
+    const secret = url.pathname.slice("/telegram/webhook/".length);
+    const secretHeader = request.headers.get("x-telegram-bot-api-secret-token");
     const correlationId = createCorrelationId();
 
-    if (!verifyTelegramSecret(secret)) {
+    if (!verifyTelegramSecretHeader(secretHeader) && !verifyTelegramSecret(secret)) {
       return jsonError(403, "INVALID_WEBHOOK_SECRET", "Webhook secret mismatch", { correlationId });
     }
 
