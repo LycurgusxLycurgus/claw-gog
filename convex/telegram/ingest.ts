@@ -20,6 +20,21 @@ function endOfDateString(value: string) {
   return date;
 }
 
+function normalizeOutboundText(value: string | null | undefined) {
+  const sanitized = typeof value === "string" ? value.replace(/\0/g, "").trim() : "";
+  return sanitized || "I do not have a response yet. Please try again.";
+}
+
+function isCronStatusQuestion(text: string) {
+  return (
+    text.includes("cron") ||
+    text.includes("6 am") ||
+    text.includes("6am") ||
+    (text.includes("reminder") && text.includes("everyday")) ||
+    (text.includes("reminder") && text.includes("every day"))
+  );
+}
+
 export const storeTelegramTurn = internalMutation({
   args: {
     ownerKey: v.string(),
@@ -141,6 +156,11 @@ export const ingestTelegramMessage = action({
       outboundText = `Connect Google Calendar here: ${env.CONVEX_SITE_URL}/oauth/google/start`;
     }
 
+    if (!outboundText && isCronStatusQuestion(normalizedText)) {
+      outboundText =
+        "The daily digest cron is configured for 6:00 AM America/Bogota and runs at 11:00 UTC in Convex. The schedule is correct in code, but I have not independently verified a fired production run from logs yet.";
+    }
+
     if (!outboundText && decision.mode === "chat") {
       const prompt = composePrompt({
         appName: "BridgeClaw",
@@ -152,7 +172,7 @@ export const ingestTelegramMessage = action({
         mode: "chat",
         message: args.text,
       });
-      outboundText = await askGemini(prompt);
+      outboundText = normalizeOutboundText(await askGemini(prompt));
     }
     if (!outboundText && decision.mode === "read") {
       const appConfig = await ctx.runQuery(internal.calendar.oauth.getAppConfig, {
@@ -213,11 +233,14 @@ export const ingestTelegramMessage = action({
             };
           },
         });
+        outboundText = normalizeOutboundText(outboundText);
       }
     }
     if (!outboundText && decision.mode === "mutate") {
       outboundText = "Mutation drafting is wired. Confirmation-gated calendar writes are the next slice.";
     }
+
+    outboundText = normalizeOutboundText(outboundText);
 
     await sendTelegramMessage(args.chatId, outboundText);
     await ctx.runMutation(internal.telegram.ingest.storeTelegramTurn, {

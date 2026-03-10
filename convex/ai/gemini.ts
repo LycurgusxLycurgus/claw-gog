@@ -1,6 +1,14 @@
 import { FunctionCallingConfigMode, GoogleGenAI, Type } from "@google/genai";
 import { getEnv } from "../app/env";
 
+function extractText(response: { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> }) {
+  const parts = response.candidates?.[0]?.content?.parts ?? [];
+  return parts
+    .map((part) => part.text ?? "")
+    .join("")
+    .trim();
+}
+
 export async function askGemini(prompt: string) {
   const env = getEnv();
   const client = new GoogleGenAI({ apiKey: env.GEMINI_API_KEY });
@@ -15,7 +23,7 @@ export async function askGemini(prompt: string) {
     },
   });
 
-  return response.text ?? "";
+  return extractText(response);
 }
 
 type ScheduleToolArgs = {
@@ -91,7 +99,7 @@ export async function runGeminiScheduleLoop(input: {
   const functionCall = response1.functionCalls?.[0];
 
   if (!functionCall || functionCall.name !== "read_schedule") {
-    return response1.text ?? "I could not determine the schedule window.";
+    return extractText(response1) || "I could not determine the schedule window.";
   }
 
   const functionArgs = functionCall.args ?? {};
@@ -124,5 +132,5 @@ export async function runGeminiScheduleLoop(input: {
     },
   });
 
-  return response2.text ?? "I could not summarize the schedule.";
+  return extractText(response2) || "I could not summarize the schedule.";
 }
