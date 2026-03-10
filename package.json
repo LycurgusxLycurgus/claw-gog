@@ -1,0 +1,27 @@
+{
+  "name": "bridgeclaw-calendar-app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "serve:web": "node scripts/serve-web.mjs",
+    "test": "node --experimental-strip-types --test tests/**/*.test.mjs",
+    "deploy:convex": "npx convex deploy",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@google/genai": "^0.14.1",
+    "convex": "^1.25.4",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.22.0",
+    "@types/node": "^22.13.10",
+    "eslint": "^9.22.0",
+    "typescript": "^5.8.2"
+  }
+}

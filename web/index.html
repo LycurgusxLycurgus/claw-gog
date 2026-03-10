@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BridgeClaw Calendar App</title>
+    <link rel="stylesheet" href="/tokens.css" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="masthead">
+        <div>
+          <p class="eyebrow">Operator notebook</p>
+          <h1>BridgeClaw Calendar App</h1>
+        </div>
+        <p class="lead">Telegram-first calendar operations with a Convex backend, explicit confirmation, and daily 7-day digests.</p>
+      </header>
+
+      <section class="grid">
+        <article class="panel">
+          <h2>System</h2>
+          <dl id="health-panel" class="stack mono">
+            <div><dt>Status</dt><dd>Checking</dd></div>
+            <div><dt>Backend</dt><dd>Convex health route</dd></div>
+            <div><dt>UI</dt><dd>Static Render shell</dd></div>
+          </dl>
+        </article>
+
+        <article class="panel">
+          <h2>Capabilities</h2>
+          <ul class="stack" id="capability-list">
+            <li>Telegram webhook boundary</li>
+            <li>Google OAuth boundary</li>
+            <li>Daily digest formatter</li>
+            <li>Pending mutation gate</li>
+          </ul>
+        </article>
+
+        <article class="panel wide">
+          <h2>Deployment map</h2>
+          <ol class="stack">
+            <li>Create a Convex project and set the environment variables from <code>.env.example</code>.</li>
+            <li>Deploy <code>/web</code> as a Render Static Site and set <code>APP_BASE_URL</code> to that URL.</li>
+            <li>Point Telegram webhook traffic to <code>/telegram/webhook/:secret</code> on the Convex deployment.</li>
+            <li>Run Google OAuth with the Convex callback URL.</li>
+          </ol>
+        </article>
+      </section>
+    </main>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+  </html>

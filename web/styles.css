@@ -1,0 +1,97 @@
+html {
+  color-scheme: light;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top left, rgba(155, 92, 18, 0.15), transparent 30%),
+    linear-gradient(180deg, #efe4d2 0%, var(--bg) 35%, #f9f4ea 100%);
+  color: var(--ink);
+  font-family: system-ui, sans-serif;
+}
+
+.shell {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: var(--space-6) var(--space-4);
+}
+
+.masthead {
+  display: grid;
+  gap: var(--space-3);
+  margin-bottom: var(--space-6);
+}
+
+.eyebrow {
+  margin: 0;
+  color: var(--accent-strong);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+h1,
+h2 {
+  font-family: Georgia, Cambria, "Times New Roman", serif;
+  margin: 0;
+}
+
+.lead {
+  max-width: 60ch;
+  margin: 0;
+  color: var(--muted);
+}
+
+.grid {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.panel {
+  background: color-mix(in srgb, var(--surface) 88%, white);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: var(--space-5);
+}
+
+.wide {
+  grid-column: 1 / -1;
+}
+
+.stack {
+  display: grid;
+  gap: var(--space-3);
+  padding-left: 1.2rem;
+}
+
+dl.stack {
+  padding-left: 0;
+}
+
+dl.stack div {
+  display: grid;
+  gap: var(--space-1);
+}
+
+dt {
+  color: var(--muted);
+}
+
+.mono,
+code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (min-width: 640px) {
+  .grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
