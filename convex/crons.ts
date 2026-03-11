@@ -12,4 +12,12 @@ crons.daily(
   api.assistant.sendDailyDigest.runDailyDigest
 );
 
+crons.interval(
+  "heartbeat every 3 hours",
+  {
+    hours: 3,
+  },
+  api.assistant.sendHeartbeat.runHeartbeat
+);
+
 export default crons;

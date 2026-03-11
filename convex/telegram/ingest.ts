@@ -7,7 +7,7 @@ import { askGemini, runGeminiScheduleLoop } from "../ai/gemini";
 import { getEnv } from "../app/env";
 import { listAgendaRangeAcrossCalendars } from "../calendar/listWeekAgenda";
 import { fetchCalendarListEntries, getValidGoogleAccessToken, resolveSelectedCalendarIds } from "../calendar/oauth";
-import { sendTelegramChatAction, sendTelegramMessage } from "./sendMessage";
+import { sendTelegramChatAction, sendTelegramMessageWithOptions } from "./sendMessage";
 
 function parseDateString(value: string) {
   const [year, month, day] = value.split("-").map(Number);
@@ -131,6 +131,18 @@ function formatCalendarListMessage(input: {
   return lines.join("\n");
 }
 
+function defaultTelegramReplyMarkup() {
+  return {
+    keyboard: [
+      [{ text: "/agenda" }, { text: "/today" }, { text: "/tomorrow" }],
+      [{ text: "/week" }, { text: "/calendars" }, { text: "/connect" }],
+    ],
+    resize_keyboard: true,
+    is_persistent: true,
+    one_time_keyboard: false,
+  };
+}
+
 export const storeTelegramTurn = internalMutation({
   args: {
     ownerKey: v.string(),
@@ -252,7 +264,7 @@ export const ingestTelegramMessage = action({
         ownerKey: env.APP_OWNER_KEY,
       });
       outboundText = connection
-        ? "BridgeClaw is connected and ready. Try /agenda, /today, /tomorrow, /week, or /calendars."
+        ? "BridgeClaw is connected and ready. Use the keyboard below or ask naturally, for example: what do I have tomorrow?"
         : `BridgeClaw is online. Connect Google Calendar here first: ${connectUrl}`;
     }
 
@@ -390,7 +402,9 @@ export const ingestTelegramMessage = action({
 
     outboundText = normalizeOutboundText(outboundText);
 
-    await sendTelegramMessage(args.chatId, outboundText);
+    await sendTelegramMessageWithOptions(args.chatId, outboundText, {
+      replyMarkup: defaultTelegramReplyMarkup(),
+    });
     await ctx.runMutation(internal.telegram.ingest.storeTelegramTurn, {
       ownerKey: env.APP_OWNER_KEY,
       chatId: args.chatId,

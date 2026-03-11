@@ -16,6 +16,7 @@ import type * as assistant_applyPendingAction from "../assistant/applyPendingAct
 import type * as assistant_composePrompt from "../assistant/composePrompt.js";
 import type * as assistant_decide from "../assistant/decide.js";
 import type * as assistant_sendDailyDigest from "../assistant/sendDailyDigest.js";
+import type * as assistant_sendHeartbeat from "../assistant/sendHeartbeat.js";
 import type * as calendar_client from "../calendar/client.js";
 import type * as calendar_deleteEvent from "../calendar/deleteEvent.js";
 import type * as calendar_findEvent from "../calendar/findEvent.js";
@@ -50,6 +51,7 @@ declare const fullApi: ApiFromModules<{
   "assistant/composePrompt": typeof assistant_composePrompt;
   "assistant/decide": typeof assistant_decide;
   "assistant/sendDailyDigest": typeof assistant_sendDailyDigest;
+  "assistant/sendHeartbeat": typeof assistant_sendHeartbeat;
   "calendar/client": typeof calendar_client;
   "calendar/deleteEvent": typeof calendar_deleteEvent;
   "calendar/findEvent": typeof calendar_findEvent;

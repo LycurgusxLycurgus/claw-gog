@@ -32,6 +32,16 @@ function chunkTelegramText(text: string) {
 }
 
 export async function sendTelegramMessage(chatId: string, text: string) {
+  return sendTelegramMessageWithOptions(chatId, text);
+}
+
+export async function sendTelegramMessageWithOptions(
+  chatId: string,
+  text: string,
+  options?: {
+    replyMarkup?: Record<string, unknown>;
+  }
+) {
   const env = getEnv();
   const chunks = chunkTelegramText(text);
   const responses = [];
@@ -40,7 +50,11 @@ export async function sendTelegramMessage(chatId: string, text: string) {
     const response = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
       method: "POST",
       headers: { "content-type": "application/json; charset=utf-8" },
-      body: JSON.stringify({ chat_id: chatId, text: chunk }),
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: chunk,
+        reply_markup: options?.replyMarkup,
+      }),
     });
 
     const bodyText = await response.text();
