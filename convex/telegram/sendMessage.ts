@@ -61,3 +61,19 @@ export async function sendTelegramMessage(chatId: string, text: string) {
 
   return responses;
 }
+
+export async function sendTelegramChatAction(chatId: string, action = "typing") {
+  const env = getEnv();
+  const response = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendChatAction`, {
+    method: "POST",
+    headers: { "content-type": "application/json; charset=utf-8" },
+    body: JSON.stringify({ chat_id: chatId, action }),
+  });
+
+  if (!response.ok) {
+    const bodyText = await response.text();
+    throw new Error(`Telegram chat action failed with ${response.status}: ${bodyText}`);
+  }
+
+  return response.json();
+}

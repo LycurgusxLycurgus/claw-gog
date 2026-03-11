@@ -4,6 +4,7 @@ export type NormalizedTelegramUpdate = {
   text: string;
   userId: string;
   username?: string;
+  displayName?: string;
 };
 
 export function normalizeUpdate(payload: Record<string, any>): NormalizedTelegramUpdate | null {
@@ -18,5 +19,6 @@ export function normalizeUpdate(payload: Record<string, any>): NormalizedTelegra
     text: message.text.trim(),
     userId: String(message.from.id),
     username: message.from.username,
+    displayName: message.from.first_name ?? message.chat.first_name ?? message.from.username,
   };
 }

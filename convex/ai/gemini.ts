@@ -87,7 +87,6 @@ export async function runGeminiScheduleLoop(input: {
       },
       thinkingConfig: {
         thinkingBudget: 12000,
-        includeThoughts: true,
       },
     },
   });
@@ -127,7 +126,6 @@ export async function runGeminiScheduleLoop(input: {
       },
       thinkingConfig: {
         thinkingBudget: 12000,
-        includeThoughts: true,
       },
     },
   });

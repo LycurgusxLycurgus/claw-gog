@@ -148,6 +148,7 @@ http.route({
       text: normalized.text,
       userId: normalized.userId,
       username: normalized.username,
+      displayName: normalized.displayName,
     });
 
     return Response.json({

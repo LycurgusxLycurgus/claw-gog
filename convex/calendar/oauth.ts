@@ -116,6 +116,25 @@ export async function fetchCalendarList(accessToken: string) {
   return (json.items ?? []).map((calendar: Record<string, unknown>) => String(calendar.id));
 }
 
+export async function fetchCalendarListEntries(accessToken: string) {
+  const response = await fetch("https://www.googleapis.com/calendar/v3/users/me/calendarList", {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Google calendar list failed with ${response.status}`);
+  }
+
+  const json = await response.json();
+  return (json.items ?? []).map((calendar: Record<string, unknown>) => ({
+    id: String(calendar.id),
+    summary: String(calendar.summaryOverride ?? calendar.summary ?? calendar.id),
+    primary: Boolean(calendar.primary),
+  }));
+}
+
 export function pickDefaultCalendarId(calendarIds: string[], fallback: string) {
   if (calendarIds.includes("primary")) {
     return "primary";
@@ -124,6 +143,22 @@ export function pickDefaultCalendarId(calendarIds: string[], fallback: string) {
     return fallback;
   }
   return calendarIds[0] ?? fallback;
+}
+
+export function resolveSelectedCalendarIds(input: {
+  availableCalendarIds: string[];
+  selectedCalendarIds?: string[];
+  defaultCalendarId: string;
+}) {
+  const available = new Set(input.availableCalendarIds.filter(Boolean));
+  const explicit = (input.selectedCalendarIds ?? []).filter((calendarId) => available.has(calendarId));
+
+  if (explicit.length > 0) {
+    return explicit;
+  }
+
+  const fallback = pickDefaultCalendarId(input.availableCalendarIds, input.defaultCalendarId);
+  return fallback ? [fallback] : [];
 }
 
 export const getGoogleConnection = internalQuery({
@@ -190,8 +225,13 @@ export const upsertGoogleConnection = internalMutation({
       .unique();
 
     if (appConfig) {
+      const nextDefaultCalendarId = pickDefaultCalendarId(args.calendarIds, getEnv().GOOGLE_CALENDAR_DEFAULT_ID);
       await ctx.db.patch(appConfig._id, {
-        googleCalendarDefaultId: pickDefaultCalendarId(args.calendarIds, getEnv().GOOGLE_CALENDAR_DEFAULT_ID),
+        googleCalendarDefaultId: nextDefaultCalendarId,
+        googleCalendarSelectedIds:
+          Array.isArray(appConfig.googleCalendarSelectedIds) && appConfig.googleCalendarSelectedIds.length > 0
+            ? appConfig.googleCalendarSelectedIds
+            : [nextDefaultCalendarId],
         updatedAt: now,
       });
     } else {
@@ -202,6 +242,7 @@ export const upsertGoogleConnection = internalMutation({
         dailyDigestMinute: 0,
         telegramDigestChatId: getEnv().TELEGRAM_DEFAULT_CHAT_ID,
         googleCalendarDefaultId: pickDefaultCalendarId(args.calendarIds, getEnv().GOOGLE_CALENDAR_DEFAULT_ID),
+        googleCalendarSelectedIds: [pickDefaultCalendarId(args.calendarIds, getEnv().GOOGLE_CALENDAR_DEFAULT_ID)],
         locale: getEnv().DEFAULT_LOCALE,
         updatedAt: now,
       });
@@ -239,3 +280,38 @@ export async function getValidGoogleAccessToken(
 
   return refreshed.access_token;
 }
+
+export const setCalendarSelection = internalMutation({
+  args: {
+    ownerKey: v.string(),
+    defaultCalendarId: v.string(),
+    selectedCalendarIds: v.array(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    const existing = await ctx.db
+      .query("appConfig")
+      .withIndex("by_owner", (query) => query.eq("ownerKey", args.ownerKey))
+      .unique();
+
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        googleCalendarDefaultId: args.defaultCalendarId,
+        googleCalendarSelectedIds: args.selectedCalendarIds,
+        updatedAt: now,
+      });
+    } else {
+      await ctx.db.insert("appConfig", {
+        ownerKey: args.ownerKey,
+        timezone: getEnv().DEFAULT_TIMEZONE,
+        dailyDigestHour: 6,
+        dailyDigestMinute: 0,
+        telegramDigestChatId: getEnv().TELEGRAM_DEFAULT_CHAT_ID,
+        googleCalendarDefaultId: args.defaultCalendarId,
+        googleCalendarSelectedIds: args.selectedCalendarIds,
+        locale: getEnv().DEFAULT_LOCALE,
+        updatedAt: now,
+      });
+    }
+  },
+});

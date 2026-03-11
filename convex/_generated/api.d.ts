@@ -24,6 +24,7 @@ import type * as calendar_insertEvent from "../calendar/insertEvent.js";
 import type * as calendar_listWeekAgenda from "../calendar/listWeekAgenda.js";
 import type * as calendar_oauth from "../calendar/oauth.js";
 import type * as calendar_updateEvent from "../calendar/updateEvent.js";
+import type * as context_workspace from "../context/workspace.js";
 import type * as crons from "../crons.js";
 import type * as http from "../http.js";
 import type * as shared_errors from "../shared/errors.js";
@@ -57,6 +58,7 @@ declare const fullApi: ApiFromModules<{
   "calendar/listWeekAgenda": typeof calendar_listWeekAgenda;
   "calendar/oauth": typeof calendar_oauth;
   "calendar/updateEvent": typeof calendar_updateEvent;
+  "context/workspace": typeof context_workspace;
   crons: typeof crons;
   http: typeof http;
   "shared/errors": typeof shared_errors;

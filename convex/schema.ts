@@ -2,6 +2,24 @@ import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
 export default defineSchema({
+  agentProfiles: defineTable({
+    ownerKey: v.string(),
+    name: v.string(),
+    creature: v.string(),
+    vibe: v.string(),
+    visibleDescription: v.string(),
+    hiddenOperatorNotes: v.string(),
+    updatedAt: v.number(),
+  }).index("by_owner", ["ownerKey"]),
+  userProfiles: defineTable({
+    ownerKey: v.string(),
+    displayName: v.string(),
+    preferredName: v.string(),
+    timezone: v.string(),
+    locale: v.string(),
+    notes: v.optional(v.string()),
+    updatedAt: v.number(),
+  }).index("by_owner", ["ownerKey"]),
   googleConnections: defineTable({
     ownerKey: v.string(),
     googleEmail: v.string(),
@@ -88,6 +106,13 @@ export default defineSchema({
     messageText: v.string(),
     sentAt: v.number(),
   }).index("by_owner_date", ["ownerKey", "digestDate"]),
+  dailyNotes: defineTable({
+    ownerKey: v.string(),
+    noteDate: v.string(),
+    body: v.string(),
+    generatedBy: v.union(v.literal("assistant"), v.literal("operator"), v.literal("system")),
+    updatedAt: v.number(),
+  }).index("by_owner_date", ["ownerKey", "noteDate"]),
   runLogs: defineTable({
     ownerKey: v.string(),
     correlationId: v.string(),
@@ -123,6 +148,7 @@ export default defineSchema({
     dailyDigestMinute: v.number(),
     telegramDigestChatId: v.string(),
     googleCalendarDefaultId: v.string(),
+    googleCalendarSelectedIds: v.optional(v.array(v.string())),
     locale: v.string(),
     updatedAt: v.number(),
   }).index("by_owner", ["ownerKey"]),

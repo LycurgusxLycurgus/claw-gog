@@ -21,8 +21,26 @@ export async function listAgendaRange(accessToken: string, start: Date, end: Dat
   }));
 }
 
+export async function listAgendaRangeAcrossCalendars(accessToken: string, start: Date, end: Date, calendarIds: string[]) {
+  const uniqueCalendarIds = Array.from(new Set(calendarIds.filter(Boolean)));
+  if (uniqueCalendarIds.length === 0) {
+    return [];
+  }
+
+  const results = await Promise.all(uniqueCalendarIds.map((calendarId) => listAgendaRange(accessToken, start, end, calendarId)));
+  return results
+    .flat()
+    .sort((left, right) => new Date(left.start).getTime() - new Date(right.start).getTime());
+}
+
 export async function listWeekAgenda(accessToken: string, calendarId = defaultCalendarId()) {
   const start = new Date();
   const end = addDays(start, 7);
   return listAgendaRange(accessToken, start, end, calendarId);
+}
+
+export async function listWeekAgendaAcrossCalendars(accessToken: string, calendarIds: string[]) {
+  const start = new Date();
+  const end = addDays(start, 7);
+  return listAgendaRangeAcrossCalendars(accessToken, start, end, calendarIds);
 }

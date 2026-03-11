@@ -5,9 +5,9 @@ import { decideAction } from "../assistant/decide";
 import { composePrompt } from "../assistant/composePrompt";
 import { askGemini, runGeminiScheduleLoop } from "../ai/gemini";
 import { getEnv } from "../app/env";
-import { listAgendaRange } from "../calendar/listWeekAgenda";
-import { getValidGoogleAccessToken, pickDefaultCalendarId } from "../calendar/oauth";
-import { sendTelegramMessage } from "./sendMessage";
+import { listAgendaRangeAcrossCalendars } from "../calendar/listWeekAgenda";
+import { fetchCalendarListEntries, getValidGoogleAccessToken, resolveSelectedCalendarIds } from "../calendar/oauth";
+import { sendTelegramChatAction, sendTelegramMessage } from "./sendMessage";
 
 function parseDateString(value: string) {
   const [year, month, day] = value.split("-").map(Number);
@@ -33,6 +33,102 @@ function isCronStatusQuestion(text: string) {
     (text.includes("reminder") && text.includes("everyday")) ||
     (text.includes("reminder") && text.includes("every day"))
   );
+}
+
+function parseCalendarSelectionCommand(text: string) {
+  const trimmed = text.trim();
+  if (trimmed.startsWith("/usecalendar ")) {
+    return {
+      mode: "single" as const,
+      values: [trimmed.slice("/usecalendar ".length).trim()],
+    };
+  }
+  if (trimmed.startsWith("/usecalendars ")) {
+    return {
+      mode: "multiple" as const,
+      values: trimmed
+        .slice("/usecalendars ".length)
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean),
+    };
+  }
+  return null;
+}
+
+function resolveCalendarTokens(
+  tokens: string[],
+  calendars: Array<{ id: string; summary: string; primary: boolean }>
+) {
+  const normalizedCalendars = calendars.map((calendar, index) => ({
+    ...calendar,
+    index: index + 1,
+    summaryLower: calendar.summary.toLowerCase(),
+  }));
+
+  const resolved = new Set<string>();
+
+  for (const token of tokens) {
+    const value = token.trim().toLowerCase();
+    if (!value) {
+      continue;
+    }
+
+    if (value === "primary") {
+      const primaryCalendar = normalizedCalendars.find((calendar) => calendar.primary);
+      if (primaryCalendar) {
+        resolved.add(primaryCalendar.id);
+      }
+      continue;
+    }
+
+    const byIndex = Number.parseInt(value, 10);
+    if (!Number.isNaN(byIndex)) {
+      const indexedCalendar = normalizedCalendars.find((calendar) => calendar.index === byIndex);
+      if (indexedCalendar) {
+        resolved.add(indexedCalendar.id);
+        continue;
+      }
+    }
+
+    const byId = normalizedCalendars.find((calendar) => calendar.id.toLowerCase() === value);
+    if (byId) {
+      resolved.add(byId.id);
+      continue;
+    }
+
+    const bySummary = normalizedCalendars.find((calendar) => calendar.summaryLower === value);
+    if (bySummary) {
+      resolved.add(bySummary.id);
+    }
+  }
+
+  return Array.from(resolved);
+}
+
+function formatCalendarListMessage(input: {
+  calendars: Array<{ id: string; summary: string; primary: boolean }>;
+  selectedCalendarIds: string[];
+  defaultCalendarId: string;
+}) {
+  const lines = ["Available calendars", ""];
+
+  input.calendars.forEach((calendar, index) => {
+    const flags = [
+      calendar.primary ? "primary" : "",
+      input.defaultCalendarId === calendar.id ? "default" : "",
+      input.selectedCalendarIds.includes(calendar.id) ? "selected" : "",
+    ].filter(Boolean);
+    const suffix = flags.length ? ` [${flags.join(", ")}]` : "";
+    lines.push(`${index + 1}. ${calendar.summary}${suffix}`);
+    lines.push(`   ${calendar.id}`);
+  });
+
+  lines.push("");
+  lines.push("Use /usecalendar <number|id|primary> to set the main calendar.");
+  lines.push("Use /usecalendars <item1,item2> to choose the calendars for reads and digests.");
+
+  return lines.join("\n");
 }
 
 export const storeTelegramTurn = internalMutation({
@@ -135,25 +231,33 @@ export const ingestTelegramMessage = action({
     text: v.string(),
     userId: v.string(),
     username: v.optional(v.string()),
+    displayName: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const env = getEnv();
+    await ctx.runMutation(internal.context.workspace.ensureWorkspaceState, {
+      ownerKey: env.APP_OWNER_KEY,
+      displayName: args.displayName ?? args.username,
+    });
+
     const decision = decideAction(args.text);
     let outboundText = "";
     const normalizedText = args.text.trim().toLowerCase();
+    const connectUrl = `${env.CONVEX_SITE_URL}/oauth/google/start`;
+
+    await sendTelegramChatAction(args.chatId);
 
     if (normalizedText === "/start") {
       const connection = await ctx.runQuery(internal.calendar.oauth.getGoogleConnection, {
         ownerKey: env.APP_OWNER_KEY,
       });
-      const connectUrl = `${env.CONVEX_SITE_URL}/oauth/google/start`;
       outboundText = connection
-        ? "BridgeClaw is connected and ready. Try /agenda, /today, /tomorrow, or /week."
+        ? "BridgeClaw is connected and ready. Try /agenda, /today, /tomorrow, /week, or /calendars."
         : `BridgeClaw is online. Connect Google Calendar here first: ${connectUrl}`;
     }
 
     if (normalizedText === "/connect") {
-      outboundText = `Connect Google Calendar here: ${env.CONVEX_SITE_URL}/oauth/google/start`;
+      outboundText = `Connect Google Calendar here: ${connectUrl}`;
     }
 
     if (!outboundText && isCronStatusQuestion(normalizedText)) {
@@ -161,72 +265,116 @@ export const ingestTelegramMessage = action({
         "The daily digest cron is configured for 6:00 AM America/Bogota and runs at 11:00 UTC in Convex. The schedule is correct in code, but I have not independently verified a fired production run from logs yet.";
     }
 
+    const promptWorkspace = await ctx.runQuery(internal.context.workspace.getPromptWorkspace, {
+      ownerKey: env.APP_OWNER_KEY,
+    });
+    const appConfig = await ctx.runQuery(internal.calendar.oauth.getAppConfig, {
+      ownerKey: env.APP_OWNER_KEY,
+    });
+    const connection = await ctx.runQuery(internal.calendar.oauth.getGoogleConnection, {
+      ownerKey: env.APP_OWNER_KEY,
+    });
+
+    if (!outboundText && normalizedText === "/calendars") {
+      const accessToken = await getValidGoogleAccessToken(ctx, env.APP_OWNER_KEY);
+      if (!accessToken) {
+        outboundText = `Google Calendar is not connected yet. Connect it here: ${connectUrl}`;
+      } else {
+        const calendars = await fetchCalendarListEntries(accessToken);
+        outboundText = formatCalendarListMessage({
+          calendars,
+          selectedCalendarIds: appConfig?.googleCalendarSelectedIds ?? [],
+          defaultCalendarId: appConfig?.googleCalendarDefaultId ?? env.GOOGLE_CALENDAR_DEFAULT_ID,
+        });
+      }
+    }
+
+    const selectionCommand = parseCalendarSelectionCommand(args.text);
+    if (!outboundText && selectionCommand) {
+      const accessToken = await getValidGoogleAccessToken(ctx, env.APP_OWNER_KEY);
+      if (!accessToken) {
+        outboundText = `Google Calendar is not connected yet. Connect it here: ${connectUrl}`;
+      } else {
+        const calendars = await fetchCalendarListEntries(accessToken);
+        const selectedCalendarIds = resolveCalendarTokens(selectionCommand.values, calendars);
+
+        if (selectedCalendarIds.length === 0) {
+          outboundText = "I could not match that calendar selection. Use /calendars first, then pick by number, id, or primary.";
+        } else {
+          const defaultCalendarId = selectionCommand.mode === "single" ? selectedCalendarIds[0] : selectedCalendarIds[0];
+          await ctx.runMutation(internal.calendar.oauth.setCalendarSelection, {
+            ownerKey: env.APP_OWNER_KEY,
+            defaultCalendarId,
+            selectedCalendarIds,
+          });
+          const selectedNames = calendars
+            .filter((calendar: { id: string; summary: string; primary: boolean }) => selectedCalendarIds.includes(calendar.id))
+            .map((calendar: { id: string; summary: string; primary: boolean }) => calendar.summary);
+          outboundText = `Calendar selection saved. Active calendars: ${selectedNames.join(", ")}. Default calendar: ${selectedNames[0]}.`;
+        }
+      }
+    }
+
     if (!outboundText && decision.mode === "chat") {
       const prompt = composePrompt({
         appName: "BridgeClaw",
-        connectionStatus: "connected",
-        defaultCalendarId: env.GOOGLE_CALENDAR_DEFAULT_ID,
+        connectionStatus: connection ? "connected" : "not connected",
+        defaultCalendarId: appConfig?.googleCalendarDefaultId ?? env.GOOGLE_CALENDAR_DEFAULT_ID,
+        selectedCalendarIds: appConfig?.googleCalendarSelectedIds ?? [],
         nowIso: new Date().toISOString(),
-        timezone: env.DEFAULT_TIMEZONE,
+        timezone: appConfig?.timezone ?? env.DEFAULT_TIMEZONE,
         transcript: [],
         mode: "chat",
         message: args.text,
+        agentProfile: promptWorkspace.agentProfile,
+        userProfile: promptWorkspace.userProfile,
+        fragments: promptWorkspace.fragments,
+        topMemories: promptWorkspace.topMemories,
+        todayNote: promptWorkspace.todayNote,
       });
       outboundText = normalizeOutboundText(await askGemini(prompt));
     }
     if (!outboundText && decision.mode === "read") {
-      const appConfig = await ctx.runQuery(internal.calendar.oauth.getAppConfig, {
-        ownerKey: env.APP_OWNER_KEY,
-      });
       const accessToken = await getValidGoogleAccessToken(ctx, env.APP_OWNER_KEY);
-      const connectUrl = `${env.CONVEX_SITE_URL}/oauth/google/start`;
 
       if (!accessToken) {
         outboundText = `Google Calendar is not connected yet. Connect it here: ${connectUrl}`;
       } else {
         const timeZone = appConfig?.timezone ?? env.DEFAULT_TIMEZONE;
         const locale = appConfig?.locale ?? env.DEFAULT_LOCALE;
-        const connection = await ctx.runQuery(internal.calendar.oauth.getGoogleConnection, {
-          ownerKey: env.APP_OWNER_KEY,
+        const selectedCalendarIds = resolveSelectedCalendarIds({
+          availableCalendarIds: connection?.calendarIds ?? [],
+          selectedCalendarIds: appConfig?.googleCalendarSelectedIds ?? [],
+          defaultCalendarId: appConfig?.googleCalendarDefaultId ?? env.GOOGLE_CALENDAR_DEFAULT_ID,
         });
-        const preferredCalendarId = pickDefaultCalendarId(connection?.calendarIds ?? [], appConfig?.googleCalendarDefaultId ?? env.GOOGLE_CALENDAR_DEFAULT_ID);
         const prompt = composePrompt({
           appName: "BridgeClaw",
           connectionStatus: "connected",
-          defaultCalendarId: preferredCalendarId,
+          defaultCalendarId: appConfig?.googleCalendarDefaultId ?? env.GOOGLE_CALENDAR_DEFAULT_ID,
+          selectedCalendarIds,
           nowIso: new Date().toISOString(),
           timezone: timeZone,
           transcript: [],
           mode: "read",
           message: args.text,
+          agentProfile: promptWorkspace.agentProfile,
+          userProfile: promptWorkspace.userProfile,
+          fragments: promptWorkspace.fragments,
+          topMemories: promptWorkspace.topMemories,
+          todayNote: promptWorkspace.todayNote,
         });
 
         outboundText = await runGeminiScheduleLoop({
           prompt,
           readSchedule: async ({ startDate, endDate, requestedLabel }) => {
-            let events = await listAgendaRange(accessToken, parseDateString(startDate), endOfDateString(endDate), preferredCalendarId);
-
-            if (events.length === 0 && connection?.calendarIds?.length) {
-              const candidateIds = Array.from(new Set(connection.calendarIds.filter(Boolean)));
-              for (const candidateId of candidateIds) {
-                if (candidateId === preferredCalendarId) {
-                  continue;
-                }
-                const candidateEvents = await listAgendaRange(accessToken, parseDateString(startDate), endOfDateString(endDate), candidateId);
-                if (candidateEvents.length > 0) {
-                  events = candidateEvents;
-                  return {
-                    calendarId: candidateId,
-                    count: events.length,
-                    requestedLabel,
-                    events,
-                  };
-                }
-              }
-            }
-
+            const events = await listAgendaRangeAcrossCalendars(
+              accessToken,
+              parseDateString(startDate),
+              endOfDateString(endDate),
+              selectedCalendarIds
+            );
             return {
-              calendarId: preferredCalendarId,
+              calendarId: selectedCalendarIds.join(","),
               count: events.length,
               requestedLabel,
               events,
