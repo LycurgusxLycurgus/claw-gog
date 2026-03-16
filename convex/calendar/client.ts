@@ -15,7 +15,8 @@ export async function googleRequest(path: string, init: RequestInit, token: Toke
   });
 
   if (!response.ok) {
-    throw new Error(`Google request failed: ${response.status} ${response.statusText}`);
+    const bodyText = await response.text();
+    throw new Error(`Google request failed: ${response.status} ${response.statusText} ${bodyText}`.trim());
   }
 
   if (response.status === 204) {

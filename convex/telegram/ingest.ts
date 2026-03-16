@@ -7,7 +7,7 @@ import { composePrompt } from "../assistant/composePrompt";
 import { askGemini, runGeminiScheduleLoop } from "../ai/gemini";
 import { getEnv } from "../app/env";
 import { listAgendaRangeAcrossCalendars } from "../calendar/listWeekAgenda";
-import { fetchCalendarListEntries, getValidGoogleAccessToken, resolveSelectedCalendarIds } from "../calendar/oauth";
+import { fetchCalendarListEntries, getValidGoogleAccessToken, pickWritableCalendarId, resolveSelectedCalendarIds } from "../calendar/oauth";
 import { sendTelegramChatAction, sendTelegramMessageWithOptions } from "./sendMessage";
 
 function getZonedParts(date: Date, timeZone: string) {
@@ -223,7 +223,7 @@ function parseCalendarSelectionCommand(text: string) {
 
 function resolveCalendarTokens(
   tokens: string[],
-  calendars: Array<{ id: string; summary: string; primary: boolean }>
+  calendars: Array<{ id: string; summary: string; primary: boolean; writable: boolean }>
 ) {
   const normalizedCalendars = calendars.map((calendar, index) => ({
     ...calendar,
@@ -272,7 +272,7 @@ function resolveCalendarTokens(
 }
 
 function formatCalendarListMessage(input: {
-  calendars: Array<{ id: string; summary: string; primary: boolean }>;
+  calendars: Array<{ id: string; summary: string; primary: boolean; writable: boolean }>;
   selectedCalendarIds: string[];
   defaultCalendarId: string;
 }) {
@@ -281,6 +281,7 @@ function formatCalendarListMessage(input: {
   input.calendars.forEach((calendar, index) => {
     const flags = [
       calendar.primary ? "primary" : "",
+      calendar.writable ? "writable" : "read-only",
       input.defaultCalendarId === calendar.id ? "default" : "",
       input.selectedCalendarIds.includes(calendar.id) ? "selected" : "",
     ].filter(Boolean);
@@ -306,6 +307,14 @@ function defaultTelegramReplyMarkup() {
     is_persistent: true,
     one_time_keyboard: false,
   };
+}
+
+function formatGoogleCalendarWriteError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes("403")) {
+    return "Google rejected the write on the selected calendar. This usually means the current default calendar is read-only. Run /calendars, then /usecalendar primary, and try again.";
+  }
+  return message;
 }
 
 export const storeTelegramTurn = internalMutation({
@@ -600,8 +609,8 @@ export const ingestTelegramMessage = action({
             selectedCalendarIds,
           });
           const selectedNames = calendars
-            .filter((calendar: { id: string; summary: string; primary: boolean }) => selectedCalendarIds.includes(calendar.id))
-            .map((calendar: { id: string; summary: string; primary: boolean }) => calendar.summary);
+            .filter((calendar: { id: string; summary: string; primary: boolean; writable: boolean }) => selectedCalendarIds.includes(calendar.id))
+            .map((calendar: { id: string; summary: string; primary: boolean; writable: boolean }) => calendar.summary);
           outboundText = `Calendar selection saved. Active calendars: ${selectedNames.join(", ")}. Default calendar: ${selectedNames[0]}.`;
         }
       }
@@ -691,21 +700,29 @@ export const ingestTelegramMessage = action({
         if (!pendingAction || pendingAction.status !== "draft") {
           outboundText = "There is no pending calendar draft to confirm.";
         } else {
-          const created = await applyPendingAction(accessToken, {
-            actionType: pendingAction.actionType,
-            calendarId: pendingAction.calendarId,
-            targetEventId: pendingAction.targetEventId,
-            draftPayload: pendingAction.draftPayload,
-          });
-          await ctx.runMutation(internal.telegram.ingest.resolvePendingAction, {
-            chatId: args.chatId,
-            nextStatus: "applied",
-          });
-          const meetLink =
-            typeof created?.hangoutLink === "string"
-              ? created.hangoutLink
-              : created?.conferenceData?.entryPoints?.find?.((entry: { uri?: string }) => typeof entry.uri === "string")?.uri;
-          outboundText = `Event created.\n- ${created.summary}\n- ${formatEventWindow(created.start?.dateTime ?? created.start?.date, created.end?.dateTime ?? created.end?.date, appConfig?.timezone ?? env.DEFAULT_TIMEZONE, appConfig?.locale ?? env.DEFAULT_LOCALE)}${meetLink ? `\n- Meet link: ${meetLink}` : ""}`;
+          try {
+            const created = await applyPendingAction(accessToken, {
+              actionType: pendingAction.actionType,
+              calendarId: pendingAction.calendarId,
+              targetEventId: pendingAction.targetEventId,
+              draftPayload: pendingAction.draftPayload,
+            });
+            await ctx.runMutation(internal.telegram.ingest.resolvePendingAction, {
+              chatId: args.chatId,
+              nextStatus: "applied",
+            });
+            const meetLink =
+              typeof created?.hangoutLink === "string"
+                ? created.hangoutLink
+                : created?.conferenceData?.entryPoints?.find?.((entry: { uri?: string }) => typeof entry.uri === "string")?.uri;
+            outboundText = `Event created.\n- ${created.summary}\n- ${formatEventWindow(created.start?.dateTime ?? created.start?.date, created.end?.dateTime ?? created.end?.date, appConfig?.timezone ?? env.DEFAULT_TIMEZONE, appConfig?.locale ?? env.DEFAULT_LOCALE)}${meetLink ? `\n- Meet link: ${meetLink}` : ""}`;
+          } catch (error) {
+            outboundText = formatGoogleCalendarWriteError(error);
+            await ctx.runMutation(internal.telegram.ingest.resolvePendingAction, {
+              chatId: args.chatId,
+              nextStatus: "cancelled",
+            });
+          }
         }
       } else if (normalizedText === "/cancel") {
         await ctx.runMutation(internal.telegram.ingest.resolvePendingAction, {
@@ -731,7 +748,15 @@ export const ingestTelegramMessage = action({
         } else if ("error" in draft) {
           outboundText = draft.error ?? "I could not parse that local event time.";
         } else {
-          const calendarId = appConfig?.googleCalendarDefaultId ?? selectedCalendarIds[0] ?? env.GOOGLE_CALENDAR_DEFAULT_ID;
+          const calendars = await fetchCalendarListEntries(accessToken);
+          const calendarId = pickWritableCalendarId({
+            calendars,
+            selectedCalendarIds,
+            defaultCalendarId: appConfig?.googleCalendarDefaultId ?? env.GOOGLE_CALENDAR_DEFAULT_ID,
+          });
+          if (!calendarId) {
+            outboundText = "I could not find a writable Google Calendar. Run /calendars and pick a writable calendar with /usecalendar primary.";
+          } else {
           await ctx.runMutation(internal.telegram.ingest.upsertPendingActionDraft, {
             ownerKey: env.APP_OWNER_KEY,
             chatId: args.chatId,
@@ -752,11 +777,13 @@ export const ingestTelegramMessage = action({
             `- Time: ${formatFloatingEventWindow(startDateTime, endDateTime, locale)} (${timeZone})`,
             attendees.length ? `- Guests: ${attendees.map((attendee) => attendee.email).join(", ")}` : "",
             `- Video call: ${hasConferenceData ? "yes" : "no"}`,
+            `- Target calendar: ${calendars.find((calendar: { id: string; summary: string; primary: boolean; writable: boolean }) => calendar.id === calendarId)?.summary ?? calendarId}`,
             "",
             "Reply /confirm to create it or /cancel to discard it.",
           ]
             .filter(Boolean)
             .join("\n");
+          }
         }
       }
     }

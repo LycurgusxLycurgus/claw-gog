@@ -132,6 +132,8 @@ export async function fetchCalendarListEntries(accessToken: string) {
     id: String(calendar.id),
     summary: String(calendar.summaryOverride ?? calendar.summary ?? calendar.id),
     primary: Boolean(calendar.primary),
+    accessRole: String(calendar.accessRole ?? "reader"),
+    writable: ["owner", "writer"].includes(String(calendar.accessRole ?? "reader")),
   }));
 }
 
@@ -159,6 +161,31 @@ export function resolveSelectedCalendarIds(input: {
 
   const fallback = pickDefaultCalendarId(input.availableCalendarIds, input.defaultCalendarId);
   return fallback ? [fallback] : [];
+}
+
+export function pickWritableCalendarId(input: {
+  calendars: Array<{ id: string; primary: boolean; writable: boolean }>;
+  selectedCalendarIds?: string[];
+  defaultCalendarId?: string;
+}) {
+  const selectedWritable = input.calendars.find(
+    (calendar) => input.selectedCalendarIds?.includes(calendar.id) && calendar.writable
+  );
+  if (selectedWritable) {
+    return selectedWritable.id;
+  }
+
+  const defaultWritable = input.calendars.find((calendar) => calendar.id === input.defaultCalendarId && calendar.writable);
+  if (defaultWritable) {
+    return defaultWritable.id;
+  }
+
+  const primaryWritable = input.calendars.find((calendar) => calendar.primary && calendar.writable);
+  if (primaryWritable) {
+    return primaryWritable.id;
+  }
+
+  return input.calendars.find((calendar) => calendar.writable)?.id ?? null;
 }
 
 export const getGoogleConnection = internalQuery({
