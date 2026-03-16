@@ -135,11 +135,39 @@ http.route({
     const payload = await request.json();
     const normalized = normalizeUpdate(payload);
     if (!normalized) {
-      return jsonError(400, "INVALID_TELEGRAM_UPDATE", "Unsupported Telegram payload", { correlationId });
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          phase: "telegram.webhook",
+          msg: "Ignoring unsupported Telegram payload",
+          correlationId,
+          updateKeys: Object.keys(payload ?? {}),
+        })
+      );
+      return Response.json({
+        ok: true,
+        correlationId,
+        status: "ignored",
+        reason: "unsupported_update",
+      });
     }
 
     if (!isAllowedTelegramUser(normalized.userId)) {
-      return jsonError(403, "SENDER_NOT_ALLOWED", "Telegram sender is not allowlisted", { correlationId });
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          phase: "telegram.webhook",
+          msg: "Ignoring disallowed Telegram sender",
+          correlationId,
+          userId: normalized.userId,
+        })
+      );
+      return Response.json({
+        ok: true,
+        correlationId,
+        status: "ignored",
+        reason: "sender_not_allowed",
+      });
     }
 
     const result = await ctx.runAction(api.telegram.ingest.ingestTelegramMessage, {
