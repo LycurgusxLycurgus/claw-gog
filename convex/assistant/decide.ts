@@ -2,6 +2,22 @@ export function decideAction(message: string) {
   const text = message.trim().toLowerCase();
 
   if (
+    text === "/confirm" ||
+    text === "/cancel" ||
+    text.includes("set up ") ||
+    text.includes("setup ") ||
+    text.includes("schedule ") ||
+    text.includes("book ") ||
+    text.includes("add ") ||
+    text.includes("create ") ||
+    text.includes("meeting") ||
+    text.includes("call with") ||
+    text.includes("invite ")
+  ) {
+    return { mode: "mutate", needsConfirmation: true } as const;
+  }
+
+  if (
     text.startsWith("/agenda") ||
     text.startsWith("/calendar") ||
     text.startsWith("/today") ||
@@ -20,7 +36,7 @@ export function decideAction(message: string) {
     return { mode: "read", needsConfirmation: false } as const;
   }
 
-  if (text.includes("create ") || text.includes("move ") || text.includes("delete ")) {
+  if (text.includes("move ") || text.includes("delete ")) {
     return { mode: "mutate", needsConfirmation: true } as const;
   }
 

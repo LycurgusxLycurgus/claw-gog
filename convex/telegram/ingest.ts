@@ -1,6 +1,7 @@
-import { action, internalMutation } from "../_generated/server";
+import { action, internalMutation, internalQuery } from "../_generated/server";
 import { internal } from "../_generated/api.js";
 import { v } from "convex/values";
+import { applyPendingAction } from "../assistant/applyPendingAction";
 import { decideAction } from "../assistant/decide";
 import { composePrompt } from "../assistant/composePrompt";
 import { askGemini, runGeminiScheduleLoop } from "../ai/gemini";
@@ -8,6 +9,170 @@ import { getEnv } from "../app/env";
 import { listAgendaRangeAcrossCalendars } from "../calendar/listWeekAgenda";
 import { fetchCalendarListEntries, getValidGoogleAccessToken, resolveSelectedCalendarIds } from "../calendar/oauth";
 import { sendTelegramChatAction, sendTelegramMessageWithOptions } from "./sendMessage";
+
+function getZonedParts(date: Date, timeZone: string) {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+
+  const parts = formatter.formatToParts(date);
+  const value = (type: string) => parts.find((part) => part.type === type)?.value ?? "00";
+
+  return {
+    year: Number(value("year")),
+    month: Number(value("month")),
+    day: Number(value("day")),
+    hour: Number(value("hour")),
+    minute: Number(value("minute")),
+  };
+}
+
+function formatLocalNow(date: Date, timeZone: string, locale: string) {
+  return new Intl.DateTimeFormat(locale, {
+    timeZone,
+    dateStyle: "full",
+    timeStyle: "short",
+  }).format(date);
+}
+
+function toLocalDateTimeString(parts: { year: number; month: number; day: number; hour: number; minute: number }) {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${parts.year}-${pad(parts.month)}-${pad(parts.day)}T${pad(parts.hour)}:${pad(parts.minute)}:00`;
+}
+
+function addMinutesToLocalParts(parts: { year: number; month: number; day: number; hour: number; minute: number }, minutesToAdd: number) {
+  const value = new Date(Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute + minutesToAdd, 0));
+  return {
+    year: value.getUTCFullYear(),
+    month: value.getUTCMonth() + 1,
+    day: value.getUTCDate(),
+    hour: value.getUTCHours(),
+    minute: value.getUTCMinutes(),
+  };
+}
+
+function compareLocalParts(
+  left: { year: number; month: number; day: number; hour: number; minute: number },
+  right: { year: number; month: number; day: number; hour: number; minute: number }
+) {
+  const tupleLeft = [left.year, left.month, left.day, left.hour, left.minute];
+  const tupleRight = [right.year, right.month, right.day, right.hour, right.minute];
+  for (let index = 0; index < tupleLeft.length; index += 1) {
+    if (tupleLeft[index] !== tupleRight[index]) {
+      return tupleLeft[index] - tupleRight[index];
+    }
+  }
+  return 0;
+}
+
+function formatEventWindow(start: string, end: string, timeZone: string, locale: string) {
+  const dateFormatter = new Intl.DateTimeFormat(locale, {
+    timeZone,
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+  const timeFormatter = new Intl.DateTimeFormat(locale, {
+    timeZone,
+    timeStyle: "short",
+  });
+  return `${dateFormatter.format(new Date(start))} - ${timeFormatter.format(new Date(end))}`;
+}
+
+function formatFloatingEventWindow(startLocal: string, endLocal: string, locale: string) {
+  const parseLocal = (value: string) => {
+    const [datePart, timePart] = value.split("T");
+    const [year, month, day] = datePart.split("-").map(Number);
+    const [hour, minute] = timePart.split(":").map(Number);
+    return new Date(Date.UTC(year, month - 1, day, hour, minute, 0));
+  };
+
+  const dateFormatter = new Intl.DateTimeFormat(locale, {
+    timeZone: "UTC",
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+  const timeFormatter = new Intl.DateTimeFormat(locale, {
+    timeZone: "UTC",
+    timeStyle: "short",
+  });
+
+  return `${dateFormatter.format(parseLocal(startLocal))} - ${timeFormatter.format(parseLocal(endLocal))}`;
+}
+
+function extractEmails(text: string) {
+  return Array.from(new Set(text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) ?? []));
+}
+
+function parseCreateMeetingRequest(text: string, options: { timeZone: string; now: Date }) {
+  const normalized = text.toLowerCase();
+  const timeMatch = text.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i);
+  if (!timeMatch) {
+    return null;
+  }
+
+  const localNow = getZonedParts(options.now, options.timeZone);
+  const dayOffset = normalized.includes("tomorrow") ? 1 : 0;
+  const targetDate = addMinutesToLocalParts({ ...localNow, hour: 0, minute: 0 }, dayOffset * 24 * 60);
+  let hour = Number(timeMatch[1]);
+  const minute = Number(timeMatch[2] ?? "0");
+  const meridiem = timeMatch[3].toLowerCase();
+
+  if (meridiem === "pm" && hour !== 12) {
+    hour += 12;
+  }
+  if (meridiem === "am" && hour === 12) {
+    hour = 0;
+  }
+
+  const startParts = {
+    year: targetDate.year,
+    month: targetDate.month,
+    day: targetDate.day,
+    hour,
+    minute,
+  };
+
+  if (compareLocalParts(startParts, localNow) <= 0) {
+    return {
+      error: "That local time has already passed in America/Bogota. Send a later time or say tomorrow.",
+    } as const;
+  }
+
+  const endParts = addMinutesToLocalParts(startParts, 30);
+  const emails = extractEmails(text);
+  const hasVideoCall = normalized.includes("video") || normalized.includes("meet") || normalized.includes("video call");
+  const summary = emails.length > 0 ? `Meeting with ${emails.join(", ")}` : "Meeting";
+
+  return {
+    actionType: "create_event" as const,
+    summaryText: summary,
+    draftPayload: {
+      summary,
+      start: {
+        dateTime: toLocalDateTimeString(startParts),
+        timeZone: options.timeZone,
+      },
+      end: {
+        dateTime: toLocalDateTimeString(endParts),
+        timeZone: options.timeZone,
+      },
+      attendees: emails.map((email) => ({ email })),
+      conferenceData: hasVideoCall
+        ? {
+            createRequest: {
+              requestId: `bridgeclaw-${options.now.getTime()}`,
+            },
+          }
+        : undefined,
+    },
+  };
+}
 
 function parseDateString(value: string) {
   const [year, month, day] = value.split("-").map(Number);
@@ -236,6 +401,120 @@ export const storeTelegramTurn = internalMutation({
   },
 });
 
+export const getConversationByChatId = internalQuery({
+  args: {
+    chatId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    return ctx.db
+      .query("conversations")
+      .withIndex("by_session", (query) => query.eq("sessionKey", `telegram:${args.chatId}`))
+      .unique();
+  },
+});
+
+export const getPendingActionByChatId = internalQuery({
+  args: {
+    chatId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const conversation = await ctx.db
+      .query("conversations")
+      .withIndex("by_session", (query) => query.eq("sessionKey", `telegram:${args.chatId}`))
+      .unique();
+
+    if (!conversation?.pendingActionId) {
+      return null;
+    }
+
+    return ctx.db.get(conversation.pendingActionId);
+  },
+});
+
+export const upsertPendingActionDraft = internalMutation({
+  args: {
+    ownerKey: v.string(),
+    chatId: v.string(),
+    actionType: v.union(v.literal("create_event"), v.literal("move_event"), v.literal("delete_event")),
+    calendarId: v.string(),
+    draftPayload: v.any(),
+    summaryText: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    const existingConversation = await ctx.db
+      .query("conversations")
+      .withIndex("by_session", (query) => query.eq("sessionKey", `telegram:${args.chatId}`))
+      .unique();
+
+    const conversationId =
+      existingConversation?._id ??
+      (await ctx.db.insert("conversations", {
+        ownerKey: args.ownerKey,
+        channel: "telegram",
+        externalChatId: args.chatId,
+        sessionKey: `telegram:${args.chatId}`,
+        status: "active",
+        lastMessageAt: now,
+        updatedAt: now,
+      }));
+
+    if (existingConversation?.pendingActionId) {
+      await ctx.db.patch(existingConversation.pendingActionId, {
+        status: "cancelled",
+      });
+    }
+
+    const pendingActionId = await ctx.db.insert("pendingActions", {
+      ownerKey: args.ownerKey,
+      conversationId,
+      actionType: args.actionType,
+      calendarId: args.calendarId,
+      draftPayload: args.draftPayload,
+      summaryText: args.summaryText,
+      status: "draft",
+      expiresAt: now + 60 * 60 * 1000,
+      createdAt: now,
+    });
+
+    await ctx.db.patch(conversationId, {
+      pendingActionId,
+      status: "waiting_for_confirmation",
+      lastMessageAt: now,
+      updatedAt: now,
+    });
+
+    return pendingActionId;
+  },
+});
+
+export const resolvePendingAction = internalMutation({
+  args: {
+    chatId: v.string(),
+    nextStatus: v.union(v.literal("applied"), v.literal("cancelled"), v.literal("expired")),
+  },
+  handler: async (ctx, args) => {
+    const conversation = await ctx.db
+      .query("conversations")
+      .withIndex("by_session", (query) => query.eq("sessionKey", `telegram:${args.chatId}`))
+      .unique();
+
+    if (!conversation?.pendingActionId) {
+      return;
+    }
+
+    await ctx.db.patch(conversation.pendingActionId, {
+      status: args.nextStatus,
+    });
+
+    await ctx.db.patch(conversation._id, {
+      pendingActionId: undefined,
+      status: "active",
+      updatedAt: Date.now(),
+    });
+  },
+});
+
 export const ingestTelegramMessage = action({
   args: {
     chatId: v.string(),
@@ -256,6 +535,7 @@ export const ingestTelegramMessage = action({
     let outboundText = "";
     const normalizedText = args.text.trim().toLowerCase();
     const connectUrl = `${env.CONVEX_SITE_URL}/oauth/google/start`;
+    const now = new Date();
 
     await sendTelegramChatAction(args.chatId);
 
@@ -328,13 +608,16 @@ export const ingestTelegramMessage = action({
     }
 
     if (!outboundText && decision.mode === "chat") {
+      const timeZone = appConfig?.timezone ?? env.DEFAULT_TIMEZONE;
+      const locale = appConfig?.locale ?? env.DEFAULT_LOCALE;
       const prompt = composePrompt({
         appName: "BridgeClaw",
         connectionStatus: connection ? "connected" : "not connected",
         defaultCalendarId: appConfig?.googleCalendarDefaultId ?? env.GOOGLE_CALENDAR_DEFAULT_ID,
         selectedCalendarIds: appConfig?.googleCalendarSelectedIds ?? [],
-        nowIso: new Date().toISOString(),
-        timezone: appConfig?.timezone ?? env.DEFAULT_TIMEZONE,
+        nowIso: now.toISOString(),
+        nowLocal: formatLocalNow(now, timeZone, locale),
+        timezone: timeZone,
         transcript: [],
         mode: "chat",
         message: args.text,
@@ -364,7 +647,8 @@ export const ingestTelegramMessage = action({
           connectionStatus: "connected",
           defaultCalendarId: appConfig?.googleCalendarDefaultId ?? env.GOOGLE_CALENDAR_DEFAULT_ID,
           selectedCalendarIds,
-          nowIso: new Date().toISOString(),
+          nowIso: now.toISOString(),
+          nowLocal: formatLocalNow(now, timeZone, locale),
           timezone: timeZone,
           transcript: [],
           mode: "read",
@@ -397,7 +681,84 @@ export const ingestTelegramMessage = action({
       }
     }
     if (!outboundText && decision.mode === "mutate") {
-      outboundText = "Mutation drafting is wired. Confirmation-gated calendar writes are the next slice.";
+      const accessToken = await getValidGoogleAccessToken(ctx, env.APP_OWNER_KEY);
+      if (!accessToken) {
+        outboundText = `Google Calendar is not connected yet. Connect it here: ${connectUrl}`;
+      } else if (normalizedText === "/confirm") {
+        const pendingAction = await ctx.runQuery(internal.telegram.ingest.getPendingActionByChatId, {
+          chatId: args.chatId,
+        });
+        if (!pendingAction || pendingAction.status !== "draft") {
+          outboundText = "There is no pending calendar draft to confirm.";
+        } else {
+          const created = await applyPendingAction(accessToken, {
+            actionType: pendingAction.actionType,
+            calendarId: pendingAction.calendarId,
+            targetEventId: pendingAction.targetEventId,
+            draftPayload: pendingAction.draftPayload,
+          });
+          await ctx.runMutation(internal.telegram.ingest.resolvePendingAction, {
+            chatId: args.chatId,
+            nextStatus: "applied",
+          });
+          const meetLink =
+            typeof created?.hangoutLink === "string"
+              ? created.hangoutLink
+              : created?.conferenceData?.entryPoints?.find?.((entry: { uri?: string }) => typeof entry.uri === "string")?.uri;
+          outboundText = `Event created.\n- ${created.summary}\n- ${formatEventWindow(created.start?.dateTime ?? created.start?.date, created.end?.dateTime ?? created.end?.date, appConfig?.timezone ?? env.DEFAULT_TIMEZONE, appConfig?.locale ?? env.DEFAULT_LOCALE)}${meetLink ? `\n- Meet link: ${meetLink}` : ""}`;
+        }
+      } else if (normalizedText === "/cancel") {
+        await ctx.runMutation(internal.telegram.ingest.resolvePendingAction, {
+          chatId: args.chatId,
+          nextStatus: "cancelled",
+        });
+        outboundText = "Pending calendar draft cancelled.";
+      } else {
+        const timeZone = appConfig?.timezone ?? env.DEFAULT_TIMEZONE;
+        const locale = appConfig?.locale ?? env.DEFAULT_LOCALE;
+        const selectedCalendarIds = resolveSelectedCalendarIds({
+          availableCalendarIds: connection?.calendarIds ?? [],
+          selectedCalendarIds: appConfig?.googleCalendarSelectedIds ?? [],
+          defaultCalendarId: appConfig?.googleCalendarDefaultId ?? env.GOOGLE_CALENDAR_DEFAULT_ID,
+        });
+        const draft = parseCreateMeetingRequest(args.text, {
+          timeZone,
+          now,
+        });
+
+        if (!draft) {
+          outboundText = "I can draft a meeting when you give me a local day and time, for example: set up a meeting today at 3:30 pm with alice@example.com.";
+        } else if ("error" in draft) {
+          outboundText = draft.error ?? "I could not parse that local event time.";
+        } else {
+          const calendarId = appConfig?.googleCalendarDefaultId ?? selectedCalendarIds[0] ?? env.GOOGLE_CALENDAR_DEFAULT_ID;
+          await ctx.runMutation(internal.telegram.ingest.upsertPendingActionDraft, {
+            ownerKey: env.APP_OWNER_KEY,
+            chatId: args.chatId,
+            actionType: "create_event",
+            calendarId,
+            draftPayload: draft.draftPayload,
+            summaryText: draft.summaryText,
+          });
+
+          const startDateTime = String((draft.draftPayload.start as { dateTime: string }).dateTime);
+          const endDateTime = String((draft.draftPayload.end as { dateTime: string }).dateTime);
+          const attendees = (draft.draftPayload.attendees as Array<{ email: string }> | undefined) ?? [];
+          const hasConferenceData = Boolean(draft.draftPayload.conferenceData);
+
+          outboundText = [
+            "Draft ready",
+            `- Title: ${draft.summaryText}`,
+            `- Time: ${formatFloatingEventWindow(startDateTime, endDateTime, locale)} (${timeZone})`,
+            attendees.length ? `- Guests: ${attendees.map((attendee) => attendee.email).join(", ")}` : "",
+            `- Video call: ${hasConferenceData ? "yes" : "no"}`,
+            "",
+            "Reply /confirm to create it or /cancel to discard it.",
+          ]
+            .filter(Boolean)
+            .join("\n");
+        }
+      }
     }
 
     outboundText = normalizeOutboundText(outboundText);

@@ -1,5 +1,6 @@
 export function composePrompt(input: {
   nowIso: string;
+  nowLocal?: string;
   timezone: string;
   appName?: string;
   connectionStatus?: string;
@@ -36,6 +37,7 @@ export function composePrompt(input: {
   return [
     `You are ${input.appName ?? input.agentProfile?.name ?? "BridgeClaw"}, a Telegram-first personal calendar assistant running inside the claw-gog app.`,
     `Current time: ${input.nowIso}`,
+    `Current local time: ${input.nowLocal ?? input.nowIso}`,
     `Timezone: ${input.timezone}`,
     `Mode: ${input.mode ?? "chat"}`,
     `Google Calendar connection: ${input.connectionStatus ?? "unknown"}`,
