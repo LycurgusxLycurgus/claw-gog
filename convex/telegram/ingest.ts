@@ -109,6 +109,105 @@ function extractEmails(text: string) {
   return Array.from(new Set(text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) ?? []));
 }
 
+function daysUntilWeekday(currentWeekday: number, targetWeekday: number, forceNext: boolean) {
+  let diff = (targetWeekday - currentWeekday + 7) % 7;
+  if (diff === 0 && forceNext) {
+    diff = 7;
+  }
+  return diff;
+}
+
+function resolveRequestedDateParts(text: string, localNow: { year: number; month: number; day: number; hour: number; minute: number }) {
+  const normalized = text.toLowerCase();
+  if (normalized.includes("today")) {
+    return { year: localNow.year, month: localNow.month, day: localNow.day };
+  }
+  if (normalized.includes("tomorrow")) {
+    const tomorrow = addMinutesToLocalParts({ ...localNow, hour: 0, minute: 0 }, 24 * 60);
+    return { year: tomorrow.year, month: tomorrow.month, day: tomorrow.day };
+  }
+
+  const weekdayMap: Record<string, number> = {
+    sunday: 0,
+    monday: 1,
+    tuesday: 2,
+    wednesday: 3,
+    thursday: 4,
+    friday: 5,
+    saturday: 6,
+  };
+  const weekdayMatch = normalized.match(/\b(next\s+)?(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/);
+  if (weekdayMatch) {
+    const currentWeekday = new Date(Date.UTC(localNow.year, localNow.month - 1, localNow.day)).getUTCDay();
+    const targetWeekday = weekdayMap[weekdayMatch[2]];
+    const diffDays = daysUntilWeekday(currentWeekday, targetWeekday, Boolean(weekdayMatch[1]));
+    const result = addMinutesToLocalParts({ ...localNow, hour: 0, minute: 0 }, diffDays * 24 * 60);
+    return { year: result.year, month: result.month, day: result.day };
+  }
+
+  const monthMap: Record<string, number> = {
+    january: 1,
+    february: 2,
+    march: 3,
+    april: 4,
+    may: 5,
+    june: 6,
+    july: 7,
+    august: 8,
+    september: 9,
+    october: 10,
+    november: 11,
+    december: 12,
+  };
+
+  const monthDayMatch = normalized.match(
+    /\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s*(\d{4}))?\b/
+  );
+  if (monthDayMatch) {
+    return {
+      year: Number(monthDayMatch[3] ?? localNow.year),
+      month: monthMap[monthDayMatch[1]],
+      day: Number(monthDayMatch[2]),
+    };
+  }
+
+  const dayMonthMatch = normalized.match(
+    /\b(\d{1,2})(?:st|nd|rd|th)?\s+(january|february|march|april|may|june|july|august|september|october|november|december)(?:,?\s*(\d{4}))?\b/
+  );
+  if (dayMonthMatch) {
+    return {
+      year: Number(dayMonthMatch[3] ?? localNow.year),
+      month: monthMap[dayMonthMatch[2]],
+      day: Number(dayMonthMatch[1]),
+    };
+  }
+
+  const numericMatch = normalized.match(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/);
+  if (numericMatch) {
+    const rawYear = numericMatch[3];
+    const year = rawYear ? (rawYear.length === 2 ? 2000 + Number(rawYear) : Number(rawYear)) : localNow.year;
+    return {
+      year,
+      month: Number(numericMatch[1]),
+      day: Number(numericMatch[2]),
+    };
+  }
+
+  return { year: localNow.year, month: localNow.month, day: localNow.day };
+}
+
+function hasExplicitDateReference(text: string) {
+  const normalized = text.toLowerCase();
+  return (
+    normalized.includes("today") ||
+    normalized.includes("tomorrow") ||
+    /\b(next\s+)?(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/.test(normalized) ||
+    /\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2}/.test(normalized) ||
+    /\b\d{1,2}(?:st|nd|rd|th)?\s+(january|february|march|april|may|june|july|august|september|october|november|december)\b/.test(normalized) ||
+    /\b\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b/.test(normalized)
+  );
+}
+
 function parseCreateMeetingRequest(text: string, options: { timeZone: string; now: Date }) {
   const normalized = text.toLowerCase();
   const timeMatch = text.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i);
@@ -117,8 +216,7 @@ function parseCreateMeetingRequest(text: string, options: { timeZone: string; no
   }
 
   const localNow = getZonedParts(options.now, options.timeZone);
-  const dayOffset = normalized.includes("tomorrow") ? 1 : 0;
-  const targetDate = addMinutesToLocalParts({ ...localNow, hour: 0, minute: 0 }, dayOffset * 24 * 60);
+  const targetDate = resolveRequestedDateParts(text, localNow);
   let hour = Number(timeMatch[1]);
   const minute = Number(timeMatch[2] ?? "0");
   const meridiem = timeMatch[3].toLowerCase();
@@ -172,6 +270,99 @@ function parseCreateMeetingRequest(text: string, options: { timeZone: string; no
         : undefined,
     },
   };
+}
+
+function parseDeleteOrMoveRequest(text: string) {
+  const trimmed = text.trim();
+  const lower = trimmed.toLowerCase();
+
+  if (lower.startsWith("delete ")) {
+    return {
+      actionType: "delete_event" as const,
+      subject: trimmed.slice(7).trim(),
+    };
+  }
+
+  if (lower.startsWith("remove ")) {
+    return {
+      actionType: "delete_event" as const,
+      subject: trimmed.slice(7).trim(),
+    };
+  }
+
+  const moveMatch = trimmed.match(/^(?:move|reschedule)\s+(.+?)\s+to\s+(.+)$/i);
+  if (moveMatch) {
+    return {
+      actionType: "move_event" as const,
+      subject: moveMatch[1].trim(),
+      targetExpression: moveMatch[2].trim(),
+    };
+  }
+
+  return null;
+}
+
+function extractEventSearchQuery(subject: string) {
+  return subject
+    .replace(/\b(today|tomorrow|next|on|at|from|to)\b/gi, " ")
+    .replace(/\b\d{1,2}:\d{2}\s*(am|pm)\b/gi, " ")
+    .replace(/\b\d{1,2}\s*(am|pm)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function scoreEventMatch(summary: string, query: string) {
+  const normalizedSummary = summary.toLowerCase();
+  const normalizedQuery = query.toLowerCase();
+  if (normalizedSummary === normalizedQuery) {
+    return 100;
+  }
+  if (normalizedSummary.startsWith(normalizedQuery)) {
+    return 80;
+  }
+  if (normalizedSummary.includes(normalizedQuery)) {
+    return 60;
+  }
+  return 0;
+}
+
+function matchesLocalDate(dateLike: string, target: { year: number; month: number; day: number }, timeZone: string) {
+  const parts = getZonedParts(new Date(dateLike), timeZone);
+  return parts.year === target.year && parts.month === target.month && parts.day === target.day;
+}
+
+async function findMatchingEvent(input: {
+  accessToken: string;
+  calendarIds: string[];
+  query: string;
+  timeZone: string;
+  now: Date;
+  requestedDateText?: string;
+}) {
+  const searchEnd = new Date(input.now.getTime() + 60 * 24 * 60 * 60 * 1000);
+  const results = await Promise.all(
+    input.calendarIds.map(async (calendarId) => {
+      const events = await listAgendaRangeAcrossCalendars(input.accessToken, input.now, searchEnd, [calendarId]);
+      return events.map((event) => ({ ...event, calendarId }));
+    })
+  );
+
+  const allEvents = results.flat();
+  const explicitDate = input.requestedDateText && hasExplicitDateReference(input.requestedDateText)
+    ? resolveRequestedDateParts(input.requestedDateText, getZonedParts(input.now, input.timeZone))
+    : null;
+
+  const ranked = allEvents
+    .map((event) => ({
+      event,
+      score:
+        scoreEventMatch(event.summary, input.query) +
+        (explicitDate && matchesLocalDate(event.start, explicitDate, input.timeZone) ? 25 : 0),
+    }))
+    .filter((candidate) => candidate.score > 0)
+    .sort((left, right) => right.score - left.score || new Date(left.event.start).getTime() - new Date(right.event.start).getTime());
+
+  return ranked[0]?.event ?? null;
 }
 
 function parseDateString(value: string) {
@@ -446,6 +637,7 @@ export const upsertPendingActionDraft = internalMutation({
     chatId: v.string(),
     actionType: v.union(v.literal("create_event"), v.literal("move_event"), v.literal("delete_event")),
     calendarId: v.string(),
+    targetEventId: v.optional(v.string()),
     draftPayload: v.any(),
     summaryText: v.string(),
   },
@@ -479,6 +671,7 @@ export const upsertPendingActionDraft = internalMutation({
       conversationId,
       actionType: args.actionType,
       calendarId: args.calendarId,
+      targetEventId: args.targetEventId,
       draftPayload: args.draftPayload,
       summaryText: args.summaryText,
       status: "draft",
@@ -742,8 +935,93 @@ export const ingestTelegramMessage = action({
           timeZone,
           now,
         });
+        const mutationRequest = parseDeleteOrMoveRequest(args.text);
 
-        if (!draft) {
+        if (mutationRequest?.actionType === "delete_event") {
+          const query = extractEventSearchQuery(mutationRequest.subject);
+          const matchedEvent = await findMatchingEvent({
+            accessToken,
+            calendarIds: selectedCalendarIds,
+            query,
+            timeZone,
+            now,
+            requestedDateText: mutationRequest.subject,
+          });
+
+          if (!matchedEvent) {
+            outboundText = `I could not find an upcoming event matching "${query}". Try the event title and, if needed, the date.`;
+          } else {
+            await ctx.runMutation(internal.telegram.ingest.upsertPendingActionDraft, {
+              ownerKey: env.APP_OWNER_KEY,
+              chatId: args.chatId,
+              actionType: "delete_event",
+              calendarId: matchedEvent.calendarId,
+              targetEventId: matchedEvent.id,
+              draftPayload: {},
+              summaryText: `Delete ${matchedEvent.summary}`,
+            });
+
+            outboundText = [
+              "Draft ready",
+              `- Action: delete`,
+              `- Event: ${matchedEvent.summary}`,
+              `- Time: ${formatEventWindow(matchedEvent.start, matchedEvent.end ?? matchedEvent.start, timeZone, locale)}`,
+              "",
+              "Reply /confirm to delete it or /cancel to discard it.",
+            ].join("\n");
+          }
+        } else if (mutationRequest?.actionType === "move_event") {
+          const query = extractEventSearchQuery(mutationRequest.subject);
+          const matchedEvent = await findMatchingEvent({
+            accessToken,
+            calendarIds: selectedCalendarIds,
+            query,
+            timeZone,
+            now,
+            requestedDateText: mutationRequest.subject,
+          });
+          const moveDraft = mutationRequest.targetExpression
+            ? parseCreateMeetingRequest(`set up ${matchedEvent?.summary ?? "meeting"} on ${mutationRequest.targetExpression}`, {
+                timeZone,
+                now,
+              })
+            : null;
+
+          if (!matchedEvent) {
+            outboundText = `I could not find an upcoming event matching "${query}". Try the event title and, if needed, the date.`;
+          } else if (!moveDraft || "error" in moveDraft) {
+            outboundText =
+              typeof moveDraft === "object" && moveDraft && "error" in moveDraft
+                ? moveDraft.error ?? "I could not parse the new local time."
+                : "I could not parse the new date and time. Try something like: move archID to friday at 2 pm.";
+          } else {
+            const updatedPayload = {
+              summary: matchedEvent.summary,
+              start: moveDraft.draftPayload.start,
+              end: moveDraft.draftPayload.end,
+            };
+
+            await ctx.runMutation(internal.telegram.ingest.upsertPendingActionDraft, {
+              ownerKey: env.APP_OWNER_KEY,
+              chatId: args.chatId,
+              actionType: "move_event",
+              calendarId: matchedEvent.calendarId,
+              targetEventId: matchedEvent.id,
+              draftPayload: updatedPayload,
+              summaryText: `Move ${matchedEvent.summary}`,
+            });
+
+            outboundText = [
+              "Draft ready",
+              `- Action: move`,
+              `- Event: ${matchedEvent.summary}`,
+              `- From: ${formatEventWindow(matchedEvent.start, matchedEvent.end ?? matchedEvent.start, timeZone, locale)}`,
+              `- To: ${formatFloatingEventWindow(String((updatedPayload.start as { dateTime: string }).dateTime), String((updatedPayload.end as { dateTime: string }).dateTime), locale)} (${timeZone})`,
+              "",
+              "Reply /confirm to move it or /cancel to discard it.",
+            ].join("\n");
+          }
+        } else if (!draft) {
           outboundText = "I can draft a meeting when you give me a local day and time, for example: set up a meeting today at 3:30 pm with alice@example.com.";
         } else if ("error" in draft) {
           outboundText = draft.error ?? "I could not parse that local event time.";
@@ -762,6 +1040,7 @@ export const ingestTelegramMessage = action({
             chatId: args.chatId,
             actionType: "create_event",
             calendarId,
+            targetEventId: undefined,
             draftPayload: draft.draftPayload,
             summaryText: draft.summaryText,
           });
