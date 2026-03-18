@@ -38,7 +38,8 @@ export async function exchangeGoogleCode(code: string) {
   });
 
   if (!response.ok) {
-    throw new Error(`OAuth exchange failed with ${response.status}`);
+    const bodyText = await response.text();
+    throw new Error(`OAuth exchange failed with ${response.status}: ${bodyText}`);
   }
 
   return response.json();
@@ -58,7 +59,8 @@ export async function refreshGoogleAccessToken(refreshToken: string) {
   });
 
   if (!response.ok) {
-    throw new Error(`OAuth refresh failed with ${response.status}`);
+    const bodyText = await response.text();
+    throw new Error(`OAuth refresh failed with ${response.status}: ${bodyText}`);
   }
 
   return response.json();
@@ -235,8 +237,10 @@ export const upsertGoogleConnection = internalMutation({
       .unique();
 
     if (existing) {
+      const refreshTokenEnc = args.refreshTokenEnc.trim() || existing.refreshTokenEnc;
       await ctx.db.patch(existing._id, {
         ...args,
+        refreshTokenEnc,
         updatedAt: now,
       });
     } else {
@@ -277,6 +281,26 @@ export const upsertGoogleConnection = internalMutation({
   },
 });
 
+export const setGoogleConnectionStatus = internalMutation({
+  args: {
+    ownerKey: v.string(),
+    status: v.union(v.literal("active"), v.literal("stale"), v.literal("revoked")),
+  },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("googleConnections")
+      .withIndex("by_owner", (query) => query.eq("ownerKey", args.ownerKey))
+      .unique();
+
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        status: args.status,
+        updatedAt: Date.now(),
+      });
+    }
+  },
+});
+
 export async function getValidGoogleAccessToken(
   ctx: {
     runQuery: Function;
@@ -293,19 +317,37 @@ export async function getValidGoogleAccessToken(
     return connection.accessTokenEnc;
   }
 
-  const refreshed = await refreshGoogleAccessToken(connection.refreshTokenEnc);
-  await ctx.runMutation(internal.calendar.oauth.upsertGoogleConnection, {
-    ownerKey,
-    googleEmail: connection.googleEmail,
-    accessTokenEnc: refreshed.access_token,
-    refreshTokenEnc: refreshed.refresh_token ?? connection.refreshTokenEnc,
-    expiryAt: Date.now() + Number(refreshed.expires_in ?? 3600) * 1000,
-    scope: connection.scope,
-    calendarIds: connection.calendarIds,
-    status: "active",
-  });
+  if (!connection.refreshTokenEnc?.trim()) {
+    await ctx.runMutation(internal.calendar.oauth.setGoogleConnectionStatus, {
+      ownerKey,
+      status: "stale",
+    });
+    return null;
+  }
 
-  return refreshed.access_token;
+  try {
+    const refreshed = await refreshGoogleAccessToken(connection.refreshTokenEnc);
+    await ctx.runMutation(internal.calendar.oauth.upsertGoogleConnection, {
+      ownerKey,
+      googleEmail: connection.googleEmail,
+      accessTokenEnc: refreshed.access_token,
+      refreshTokenEnc: refreshed.refresh_token ?? connection.refreshTokenEnc,
+      expiryAt: Date.now() + Number(refreshed.expires_in ?? 3600) * 1000,
+      scope: connection.scope,
+      calendarIds: connection.calendarIds,
+      status: "active",
+    });
+
+    return refreshed.access_token;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const status = message.includes("invalid_grant") || message.includes("400") ? "revoked" : "stale";
+    await ctx.runMutation(internal.calendar.oauth.setGoogleConnectionStatus, {
+      ownerKey,
+      status,
+    });
+    return null;
+  }
 }
 
 export const setCalendarSelection = internalMutation({
