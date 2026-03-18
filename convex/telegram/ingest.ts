@@ -6,6 +6,7 @@ import { decideAction } from "../assistant/decide";
 import { composePrompt } from "../assistant/composePrompt";
 import { askGemini, runGeminiScheduleLoop } from "../ai/gemini";
 import { getEnv } from "../app/env";
+import { fetchPage, searchWeb, snapshotUrl } from "../bridgecrux/client";
 import { listAgendaRangeAcrossCalendars } from "../calendar/listWeekAgenda";
 import { fetchCalendarListEntries, getValidGoogleAccessToken, pickWritableCalendarId, resolveSelectedCalendarIds } from "../calendar/oauth";
 import { sendTelegramChatAction, sendTelegramMessageWithOptions } from "./sendMessage";
@@ -55,6 +56,13 @@ function addMinutesToLocalParts(parts: { year: number; month: number; day: numbe
     hour: value.getUTCHours(),
     minute: value.getUTCMinutes(),
   };
+}
+
+function localPartsToUtcTimestamp(parts: { year: number; month: number; day: number; hour: number; minute: number }, timeZone: string) {
+  const targetAsUtc = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, 0);
+  const zonedAtGuess = getZonedParts(new Date(targetAsUtc), timeZone);
+  const zonedAsUtc = Date.UTC(zonedAtGuess.year, zonedAtGuess.month - 1, zonedAtGuess.day, zonedAtGuess.hour, zonedAtGuess.minute, 0);
+  return targetAsUtc - (zonedAsUtc - targetAsUtc);
 }
 
 function compareLocalParts(
@@ -381,6 +389,14 @@ function normalizeOutboundText(value: string | null | undefined) {
   return sanitized || "I do not have a response yet. Please try again.";
 }
 
+function truncateText(value: string, maxLength: number) {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+  return `${normalized.slice(0, maxLength - 1).trim()}…`;
+}
+
 function isCronStatusQuestion(text: string) {
   return (
     text.includes("cron") ||
@@ -410,6 +426,314 @@ function parseCalendarSelectionCommand(text: string) {
     };
   }
   return null;
+}
+
+function parseHeartbeatIntervalRequest(text: string) {
+  const match = text.trim().toLowerCase().match(/(?:set|make|change|update)\s+(?:the\s+)?heartbeat(?:\s+status)?(?:\s+to)?\s+every\s+(\d+)\s+hours?/i);
+  if (!match) {
+    return null;
+  }
+  const hours = Number(match[1]);
+  if (!Number.isFinite(hours) || hours <= 0) {
+    return null;
+  }
+  return Math.min(24, Math.max(1, hours));
+}
+
+function parseRememberRequest(text: string) {
+  const trimmed = text.trim();
+  const rememberMatch = trimmed.match(/^(?:remember|please remember)\s+(?:that\s+)?(.+)$/i);
+  const dontForgetMatch = trimmed.match(/^(?:don't forget|do not forget)\s+(?:that\s+)?(.+)$/i);
+  const body = (rememberMatch?.[1] ?? dontForgetMatch?.[1] ?? "").trim();
+  if (!body) {
+    return null;
+  }
+  const lowerBody = body.toLowerCase();
+  const memoryType =
+    lowerBody.includes("prefer") || lowerBody.includes("i like") || lowerBody.includes("my favorite")
+      ? "preference"
+      : lowerBody.includes("workflow") || lowerBody.includes("always") || lowerBody.includes("when ")
+        ? "workflow"
+        : lowerBody.includes("warning") || lowerBody.includes("avoid") || lowerBody.includes("never")
+          ? "warning"
+          : "fact";
+
+  return {
+    body: body.replace(/[.]+$/, ""),
+    memoryType,
+  } as const;
+}
+
+function parseDirectToolRequest(text: string) {
+  const trimmed = text.trim();
+  const lower = trimmed.toLowerCase();
+  if (/\bevery\s+\d+\s+hours?\b/i.test(trimmed) || /\bevery\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/i.test(trimmed)) {
+    return null;
+  }
+  const urlMatch = trimmed.match(/https?:\/\/\S+/i);
+  const url = urlMatch?.[0];
+
+  if (url && /(?:browse|open|render|snapshot|inspect in browser)/i.test(trimmed)) {
+    return {
+      mode: "browser" as const,
+      url,
+      instructions: trimmed,
+    };
+  }
+
+  if (url && /(?:fetch|read|check|inspect|review|summarize)/i.test(trimmed)) {
+    return {
+      mode: "fetch" as const,
+      url,
+      instructions: trimmed,
+    };
+  }
+
+  const searchMatch =
+    trimmed.match(/^(?:search(?: the web)? for|look up|look for|find)\s+(.+)$/i) ??
+    trimmed.match(/^(?:can you )?(?:search|look up|find)\s+(.+)$/i);
+
+  if (searchMatch) {
+    return {
+      mode: "search" as const,
+      query: searchMatch[1].trim(),
+      instructions: trimmed,
+    };
+  }
+
+  return null;
+}
+
+function weekdayIndex(name: string) {
+  return ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"].indexOf(name.toLowerCase());
+}
+
+function deriveWatchName(input: { mode: "search" | "fetch" | "browser"; query?: string; url?: string }) {
+  if (input.mode === "search") {
+    return truncateText(`Search: ${input.query ?? "watch"}`, 70);
+  }
+
+  try {
+    const hostname = input.url ? new URL(input.url).hostname : "page";
+    return truncateText(`${input.mode === "browser" ? "Browser" : "Page"}: ${hostname}`, 70);
+  } catch {
+    return truncateText(`${input.mode === "browser" ? "Browser" : "Page"} watch`, 70);
+  }
+}
+
+function parseWatchJobRequest(text: string, options: { timeZone: string; now: Date; chatId: string }) {
+  const trimmed = text.trim();
+  const lower = trimmed.toLowerCase();
+  const intervalMatch = lower.match(/\bevery\s+(\d+)\s+hours?\b/);
+  const weeklyMatch = lower.match(
+    /\bevery\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday)(?:\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?)?\b/
+  );
+
+  if (!intervalMatch && !weeklyMatch) {
+    return null;
+  }
+
+  const toolRequest = parseDirectToolRequest(trimmed) ??
+    (() => {
+      const urlMatch = trimmed.match(/https?:\/\/\S+/i);
+      if (urlMatch) {
+        return {
+          mode: "fetch" as const,
+          url: urlMatch[0],
+          instructions: trimmed,
+        };
+      }
+      const cleaned = trimmed
+        .replace(/\bevery\s+\d+\s+hours?\b/i, "")
+        .replace(/\bevery\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday)(?:\s+at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?)?\b/i, "")
+        .replace(/^(?:set up|create|make)\s+(?:a\s+)?(?:cron job|automation|watch|reminder)\s+(?:to\s+)?/i, "")
+        .trim();
+
+      if (!cleaned) {
+        return null;
+      }
+
+      return {
+        mode: "search" as const,
+        query: cleaned,
+        instructions: trimmed,
+      };
+    })();
+
+  if (!toolRequest) {
+    return null;
+  }
+
+  let nextRunAt = 0;
+  let scheduleType: "weekly" | "interval";
+  let dayOfWeek: string | undefined;
+  let intervalHours: number | undefined;
+
+  if (intervalMatch) {
+    intervalHours = Math.max(1, Number(intervalMatch[1]));
+    scheduleType = "interval";
+    nextRunAt = options.now.getTime() + intervalHours * 60 * 60 * 1000;
+  } else {
+    scheduleType = "weekly";
+    dayOfWeek = weeklyMatch?.[1].toLowerCase();
+    const localNow = getZonedParts(options.now, options.timeZone);
+    const currentWeekday = new Date(Date.UTC(localNow.year, localNow.month - 1, localNow.day)).getUTCDay();
+    const targetWeekday = weekdayIndex(dayOfWeek ?? "saturday");
+    const baseDate = addMinutesToLocalParts({ ...localNow, hour: 0, minute: 0 }, daysUntilWeekday(currentWeekday, targetWeekday, false) * 24 * 60);
+
+    let hour = Number(weeklyMatch?.[2] ?? "9");
+    const minute = Number(weeklyMatch?.[3] ?? "0");
+    const meridiem = weeklyMatch?.[4]?.toLowerCase();
+
+    if (meridiem === "pm" && hour !== 12) {
+      hour += 12;
+    }
+    if (meridiem === "am" && hour === 12) {
+      hour = 0;
+    }
+
+    const runParts = {
+      year: baseDate.year,
+      month: baseDate.month,
+      day: baseDate.day,
+      hour,
+      minute,
+    };
+
+    nextRunAt = localPartsToUtcTimestamp(runParts, options.timeZone);
+    if (nextRunAt <= options.now.getTime()) {
+      const nextWeek = addMinutesToLocalParts(runParts, 7 * 24 * 60);
+      nextRunAt = localPartsToUtcTimestamp(nextWeek, options.timeZone);
+    }
+  }
+
+  return {
+    actionType: "create_watch_job" as const,
+    summaryText: `Create watch job: ${deriveWatchName(toolRequest)}`,
+    draftPayload: {
+      name: deriveWatchName(toolRequest),
+      scheduleType,
+      dayOfWeek,
+      intervalHours,
+      mode: toolRequest.mode,
+      query: "query" in toolRequest ? toolRequest.query : undefined,
+      url: "url" in toolRequest ? toolRequest.url : undefined,
+      instructions: toolRequest.instructions,
+      deliveryChatId: options.chatId,
+      nextRunAt,
+    },
+  };
+}
+
+function formatWatchDraftMessage(draftPayload: {
+  name: string;
+  scheduleType: "weekly" | "interval";
+  dayOfWeek?: string;
+  intervalHours?: number;
+  mode: "search" | "fetch" | "browser";
+  query?: string;
+  url?: string;
+  instructions: string;
+  nextRunAt: number;
+}, locale: string, timeZone: string) {
+  const scheduleLabel =
+    draftPayload.scheduleType === "interval"
+      ? `every ${draftPayload.intervalHours} hour(s)`
+      : `every ${draftPayload.dayOfWeek}`;
+
+  const nextRunLabel = new Intl.DateTimeFormat(locale, {
+    timeZone,
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(draftPayload.nextRunAt));
+
+  return [
+    "Draft ready",
+    `- Action: create automation`,
+    `- Name: ${draftPayload.name}`,
+    `- Schedule: ${scheduleLabel}`,
+    `- Mode: ${draftPayload.mode}`,
+    draftPayload.query ? `- Query: ${draftPayload.query}` : "",
+    draftPayload.url ? `- URL: ${draftPayload.url}` : "",
+    `- Next run: ${nextRunLabel} (${timeZone})`,
+    "",
+    "Reply /confirm to create it or /cancel to discard it.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function formatWatchListMessage(watchJobs: Array<{
+  name: string;
+  enabled: boolean;
+  scheduleType: "weekly" | "interval";
+  dayOfWeek?: string;
+  intervalHours?: number;
+  mode: "search" | "fetch" | "browser";
+  nextRunAt: number;
+}>, locale: string, timeZone: string) {
+  if (watchJobs.length === 0) {
+    return "No recurring watch jobs are configured yet.";
+  }
+
+  const formatter = new Intl.DateTimeFormat(locale, {
+    timeZone,
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+
+  return [
+    "Active watch jobs",
+    "",
+    ...watchJobs.map((job, index) => {
+      const schedule = job.scheduleType === "interval" ? `every ${job.intervalHours}h` : `every ${job.dayOfWeek}`;
+      return `${index + 1}. ${job.name}\n- ${job.mode}\n- ${schedule}\n- next: ${formatter.format(new Date(job.nextRunAt))}\n- ${job.enabled ? "enabled" : "disabled"}`;
+    }),
+  ].join("\n");
+}
+
+async function summarizeDirectToolResult(input: {
+  mode: "search" | "fetch" | "browser";
+  instructions: string;
+  payload: unknown;
+}) {
+  const prompt = [
+    "You are BridgeClaw replying in Telegram.",
+    "Return final-user text only.",
+    "Summarize the tool result concisely and operationally.",
+    "No chain-of-thought, no self-talk, no markdown tables.",
+    `Mode: ${input.mode}`,
+    `User request: ${input.instructions}`,
+    JSON.stringify(input.payload, null, 2),
+  ].join("\n\n");
+
+  const summary = (await askGemini(prompt)).trim();
+  if (summary) {
+    return summary;
+  }
+
+  if (input.mode === "search") {
+    const results = Array.isArray((input.payload as { results?: unknown[] })?.results)
+      ? ((input.payload as { results?: Array<{ title?: string; url?: string }> }).results ?? [])
+      : [];
+    return results.length > 0
+      ? [
+          "Search results",
+          "",
+          ...results.slice(0, 5).map((result) => `- ${result.title ?? "Untitled"}${result.url ? `\n  ${result.url}` : ""}`),
+        ].join("\n")
+      : "No search results matched that request.";
+  }
+
+  const payload = input.payload as { title?: string; finalUrl?: string; url?: string; excerpt?: string; text?: string; content?: string };
+  return [
+    payload.title ? `Title: ${payload.title}` : "No title found.",
+    payload.finalUrl ?? payload.url ?? "",
+    "",
+    truncateText(String(payload.excerpt ?? payload.text ?? payload.content ?? "No extractable text."), 1200),
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 function resolveCalendarTokens(
@@ -492,7 +816,8 @@ function defaultTelegramReplyMarkup() {
   return {
     keyboard: [
       [{ text: "/agenda" }, { text: "/today" }, { text: "/tomorrow" }],
-      [{ text: "/week" }, { text: "/calendars" }, { text: "/connect" }],
+      [{ text: "/week" }, { text: "/calendars" }, { text: "/watches" }],
+      [{ text: "/connect" }],
     ],
     resize_keyboard: true,
     is_persistent: true,
@@ -635,7 +960,7 @@ export const upsertPendingActionDraft = internalMutation({
   args: {
     ownerKey: v.string(),
     chatId: v.string(),
-    actionType: v.union(v.literal("create_event"), v.literal("move_event"), v.literal("delete_event")),
+    actionType: v.union(v.literal("create_event"), v.literal("move_event"), v.literal("delete_event"), v.literal("create_watch_job")),
     calendarId: v.string(),
     targetEventId: v.optional(v.string()),
     draftPayload: v.any(),
@@ -746,7 +1071,7 @@ export const ingestTelegramMessage = action({
         ownerKey: env.APP_OWNER_KEY,
       });
       outboundText = connection
-        ? "BridgeClaw is connected and ready. Use the keyboard below or ask naturally, for example: what do I have tomorrow?"
+        ? "BridgeClaw is connected and ready. Use the keyboard below or ask naturally. I can read and update your calendar, run recurring watches, and search or inspect the web through BridgeCrux."
         : `BridgeClaw is online. Connect Google Calendar here first: ${connectUrl}`;
     }
 
@@ -781,6 +1106,98 @@ export const ingestTelegramMessage = action({
           defaultCalendarId: appConfig?.googleCalendarDefaultId ?? env.GOOGLE_CALENDAR_DEFAULT_ID,
         });
       }
+    }
+
+    if (!outboundText && normalizedText === "/watches") {
+      const watchJobs = await ctx.runQuery(internal.watchers.jobs.listWatchJobs, {
+        ownerKey: env.APP_OWNER_KEY,
+      });
+      outboundText = formatWatchListMessage(
+        watchJobs.sort((left: { nextRunAt: number }, right: { nextRunAt: number }) => left.nextRunAt - right.nextRunAt),
+        appConfig?.locale ?? env.DEFAULT_LOCALE,
+        appConfig?.timezone ?? env.DEFAULT_TIMEZONE
+      );
+    }
+
+    const heartbeatHours = parseHeartbeatIntervalRequest(args.text);
+    if (!outboundText && heartbeatHours) {
+      await ctx.runMutation(internal.watchers.jobs.setHeartbeatHours, {
+        ownerKey: env.APP_OWNER_KEY,
+        hours: heartbeatHours,
+      });
+      outboundText = `Heartbeat interval saved. BridgeClaw will send status updates every ${heartbeatHours} hour(s).`;
+    }
+
+    const rememberRequest = parseRememberRequest(args.text);
+    if (!outboundText && rememberRequest) {
+      await ctx.runMutation(internal.context.workspace.rememberMemory, {
+        ownerKey: env.APP_OWNER_KEY,
+        body: rememberRequest.body,
+        memoryType: rememberRequest.memoryType,
+        tags: ["telegram", "operator"],
+        salience: 85,
+      });
+      outboundText = `Saved to memory: ${rememberRequest.body}`;
+    }
+
+    const directToolRequest = parseDirectToolRequest(args.text);
+    if (!outboundText && directToolRequest) {
+      if (directToolRequest.mode === "search") {
+        const response = await searchWeb(directToolRequest.query, {
+          limit: 5,
+          freshness: "all",
+        });
+        outboundText = await summarizeDirectToolResult({
+          mode: "search",
+          instructions: directToolRequest.instructions,
+          payload: response.data,
+        });
+      } else if (directToolRequest.mode === "fetch") {
+        const response = await fetchPage(directToolRequest.url, {
+          format: "text",
+          timeoutMs: 10000,
+          maxBytes: 200000,
+        });
+        outboundText = await summarizeDirectToolResult({
+          mode: "fetch",
+          instructions: directToolRequest.instructions,
+          payload: response.data,
+        });
+      } else {
+        const response = await snapshotUrl(directToolRequest.url, {
+          includeHtml: false,
+          timeoutMs: 20000,
+          waitUntil: "load",
+          maxBytes: 250000,
+        });
+        outboundText = await summarizeDirectToolResult({
+          mode: "browser",
+          instructions: directToolRequest.instructions,
+          payload: response.data,
+        });
+      }
+    }
+
+    const watchDraft = parseWatchJobRequest(args.text, {
+      timeZone: appConfig?.timezone ?? env.DEFAULT_TIMEZONE,
+      now,
+      chatId: args.chatId,
+    });
+    if (!outboundText && watchDraft) {
+      await ctx.runMutation(internal.telegram.ingest.upsertPendingActionDraft, {
+        ownerKey: env.APP_OWNER_KEY,
+        chatId: args.chatId,
+        actionType: "create_watch_job",
+        calendarId: "automation",
+        targetEventId: undefined,
+        draftPayload: watchDraft.draftPayload,
+        summaryText: watchDraft.summaryText,
+      });
+      outboundText = formatWatchDraftMessage(
+        watchDraft.draftPayload,
+        appConfig?.locale ?? env.DEFAULT_LOCALE,
+        appConfig?.timezone ?? env.DEFAULT_TIMEZONE
+      );
     }
 
     const selectionCommand = parseCalendarSelectionCommand(args.text);
@@ -883,38 +1300,81 @@ export const ingestTelegramMessage = action({
       }
     }
     if (!outboundText && decision.mode === "mutate") {
-      const accessToken = await getValidGoogleAccessToken(ctx, env.APP_OWNER_KEY);
-      if (!accessToken) {
-        outboundText = `Google Calendar is not connected yet. Connect it here: ${connectUrl}`;
-      } else if (normalizedText === "/confirm") {
+      if (normalizedText === "/confirm") {
         const pendingAction = await ctx.runQuery(internal.telegram.ingest.getPendingActionByChatId, {
           chatId: args.chatId,
         });
         if (!pendingAction || pendingAction.status !== "draft") {
-          outboundText = "There is no pending calendar draft to confirm.";
+          outboundText = "There is no pending draft to confirm.";
         } else {
-          try {
-            const created = await applyPendingAction(accessToken, {
-              actionType: pendingAction.actionType,
-              calendarId: pendingAction.calendarId,
-              targetEventId: pendingAction.targetEventId,
-              draftPayload: pendingAction.draftPayload,
+          if (pendingAction.actionType === "create_watch_job") {
+            const payload = pendingAction.draftPayload as {
+              name: string;
+              scheduleType: "weekly" | "interval";
+              dayOfWeek?: string;
+              intervalHours?: number;
+              mode: "search" | "fetch" | "browser";
+              query?: string;
+              url?: string;
+              instructions: string;
+              deliveryChatId: string;
+              nextRunAt: number;
+            };
+            await ctx.runMutation(internal.watchers.jobs.createWatchJob, {
+              ownerKey: env.APP_OWNER_KEY,
+              name: payload.name,
+              scheduleType: payload.scheduleType,
+              dayOfWeek: payload.dayOfWeek,
+              intervalHours: payload.intervalHours,
+              mode: payload.mode,
+              query: payload.query,
+              url: payload.url,
+              instructions: payload.instructions,
+              deliveryChatId: payload.deliveryChatId,
+              nextRunAt: payload.nextRunAt,
             });
             await ctx.runMutation(internal.telegram.ingest.resolvePendingAction, {
               chatId: args.chatId,
               nextStatus: "applied",
             });
-            const meetLink =
-              typeof created?.hangoutLink === "string"
-                ? created.hangoutLink
-                : created?.conferenceData?.entryPoints?.find?.((entry: { uri?: string }) => typeof entry.uri === "string")?.uri;
-            outboundText = `Event created.\n- ${created.summary}\n- ${formatEventWindow(created.start?.dateTime ?? created.start?.date, created.end?.dateTime ?? created.end?.date, appConfig?.timezone ?? env.DEFAULT_TIMEZONE, appConfig?.locale ?? env.DEFAULT_LOCALE)}${meetLink ? `\n- Meet link: ${meetLink}` : ""}`;
-          } catch (error) {
-            outboundText = formatGoogleCalendarWriteError(error);
-            await ctx.runMutation(internal.telegram.ingest.resolvePendingAction, {
-              chatId: args.chatId,
-              nextStatus: "cancelled",
-            });
+            outboundText = `Automation created.\n- ${payload.name}\n- Next run: ${new Intl.DateTimeFormat(appConfig?.locale ?? env.DEFAULT_LOCALE, {
+              timeZone: appConfig?.timezone ?? env.DEFAULT_TIMEZONE,
+              dateStyle: "medium",
+              timeStyle: "short",
+            }).format(new Date(payload.nextRunAt))}`;
+          } else {
+            try {
+              const accessToken = await getValidGoogleAccessToken(ctx, env.APP_OWNER_KEY);
+              if (!accessToken) {
+                outboundText = `Google Calendar is not connected yet. Connect it here: ${connectUrl}`;
+                throw new Error("calendar auth missing");
+              }
+              const created = await applyPendingAction(accessToken, {
+                actionType: pendingAction.actionType,
+                calendarId: pendingAction.calendarId,
+                targetEventId: pendingAction.targetEventId,
+                draftPayload: pendingAction.draftPayload,
+              });
+              await ctx.runMutation(internal.telegram.ingest.resolvePendingAction, {
+                chatId: args.chatId,
+                nextStatus: "applied",
+              });
+              const meetLink =
+                typeof created?.hangoutLink === "string"
+                  ? created.hangoutLink
+                  : created?.conferenceData?.entryPoints?.find?.((entry: { uri?: string }) => typeof entry.uri === "string")?.uri;
+              outboundText = `Event created.\n- ${created.summary}\n- ${formatEventWindow(created.start?.dateTime ?? created.start?.date, created.end?.dateTime ?? created.end?.date, appConfig?.timezone ?? env.DEFAULT_TIMEZONE, appConfig?.locale ?? env.DEFAULT_LOCALE)}${meetLink ? `\n- Meet link: ${meetLink}` : ""}`;
+            } catch (error) {
+              if (!outboundText) {
+                outboundText = formatGoogleCalendarWriteError(error);
+              }
+              if (outboundText !== `Google Calendar is not connected yet. Connect it here: ${connectUrl}`) {
+                await ctx.runMutation(internal.telegram.ingest.resolvePendingAction, {
+                  chatId: args.chatId,
+                  nextStatus: "cancelled",
+                });
+              }
+            }
           }
         }
       } else if (normalizedText === "/cancel") {
@@ -922,8 +1382,12 @@ export const ingestTelegramMessage = action({
           chatId: args.chatId,
           nextStatus: "cancelled",
         });
-        outboundText = "Pending calendar draft cancelled.";
+        outboundText = "Pending draft cancelled.";
       } else {
+        const accessToken = await getValidGoogleAccessToken(ctx, env.APP_OWNER_KEY);
+        if (!accessToken) {
+          outboundText = `Google Calendar is not connected yet. Connect it here: ${connectUrl}`;
+        } else {
         const timeZone = appConfig?.timezone ?? env.DEFAULT_TIMEZONE;
         const locale = appConfig?.locale ?? env.DEFAULT_LOCALE;
         const selectedCalendarIds = resolveSelectedCalendarIds({
@@ -1063,6 +1527,7 @@ export const ingestTelegramMessage = action({
             .filter(Boolean)
             .join("\n");
           }
+        }
         }
       }
     }

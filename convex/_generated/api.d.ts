@@ -17,6 +17,7 @@ import type * as assistant_composePrompt from "../assistant/composePrompt.js";
 import type * as assistant_decide from "../assistant/decide.js";
 import type * as assistant_sendDailyDigest from "../assistant/sendDailyDigest.js";
 import type * as assistant_sendHeartbeat from "../assistant/sendHeartbeat.js";
+import type * as bridgecrux_client from "../bridgecrux/client.js";
 import type * as calendar_client from "../calendar/client.js";
 import type * as calendar_deleteEvent from "../calendar/deleteEvent.js";
 import type * as calendar_findEvent from "../calendar/findEvent.js";
@@ -35,6 +36,7 @@ import type * as telegram_ingest from "../telegram/ingest.js";
 import type * as telegram_normalizeUpdate from "../telegram/normalizeUpdate.js";
 import type * as telegram_sendMessage from "../telegram/sendMessage.js";
 import type * as telegram_verify from "../telegram/verify.js";
+import type * as watchers_jobs from "../watchers/jobs.js";
 
 import type {
   ApiFromModules,
@@ -52,6 +54,7 @@ declare const fullApi: ApiFromModules<{
   "assistant/decide": typeof assistant_decide;
   "assistant/sendDailyDigest": typeof assistant_sendDailyDigest;
   "assistant/sendHeartbeat": typeof assistant_sendHeartbeat;
+  "bridgecrux/client": typeof bridgecrux_client;
   "calendar/client": typeof calendar_client;
   "calendar/deleteEvent": typeof calendar_deleteEvent;
   "calendar/findEvent": typeof calendar_findEvent;
@@ -70,6 +73,7 @@ declare const fullApi: ApiFromModules<{
   "telegram/normalizeUpdate": typeof telegram_normalizeUpdate;
   "telegram/sendMessage": typeof telegram_sendMessage;
   "telegram/verify": typeof telegram_verify;
+  "watchers/jobs": typeof watchers_jobs;
 }>;
 
 /**

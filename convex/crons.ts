@@ -13,11 +13,19 @@ crons.daily(
 );
 
 crons.interval(
-  "heartbeat every 3 hours",
+  "heartbeat dispatcher hourly",
   {
-    hours: 3,
+    hours: 1,
   },
   api.assistant.sendHeartbeat.runHeartbeat
+);
+
+crons.interval(
+  "watch jobs dispatcher hourly",
+  {
+    hours: 1,
+  },
+  api.watchers.jobs.runDueWatchJobs
 );
 
 export default crons;

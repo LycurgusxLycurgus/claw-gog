@@ -70,6 +70,13 @@ export const runHeartbeat = action({
     const timeZone = appConfig?.timezone ?? env.DEFAULT_TIMEZONE;
     const locale = appConfig?.locale ?? env.DEFAULT_LOCALE;
     const chatId = appConfig?.telegramDigestChatId ?? env.TELEGRAM_DEFAULT_CHAT_ID;
+    const heartbeatHours = Math.max(1, appConfig?.statusHeartbeatHours ?? 3);
+    const lastHeartbeatAt = appConfig?.lastStatusHeartbeatAt ?? 0;
+
+    if (Date.now() - lastHeartbeatAt < heartbeatHours * 60 * 60 * 1000) {
+      return `Heartbeat not due yet. Next run after ${heartbeatHours}h interval.`;
+    }
+
     const selectedCalendarIds = resolveSelectedCalendarIds({
       availableCalendarIds: connection?.calendarIds ?? [],
       selectedCalendarIds: appConfig?.googleCalendarSelectedIds ?? [],
@@ -80,6 +87,10 @@ export const runHeartbeat = action({
     const message = formatHeartbeat(events, { locale, timeZone });
 
     await sendTelegramMessage(chatId, message);
+    await ctx.runMutation(internal.watchers.jobs.markHeartbeatSent, {
+      ownerKey: env.APP_OWNER_KEY,
+      sentAt: Date.now(),
+    });
     return message;
   },
 });
